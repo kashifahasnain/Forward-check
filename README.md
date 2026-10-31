@@ -15,8 +15,10 @@ Open the project folder in VS Code and use its integrated PowerShell terminal:
 .\.venv\Scripts\python.exe app.py
 ```
 
-Open the local address printed by Flask. Ollama is optional: when available, it
-assists with extraction, and local rules supplement its claims. If Ollama is
+Open the local address printed by Flask. Gemma 4 through the Gemini API is optional: when configured, it provides a
+structured AI assessment for each grounded claim. Ollama remains an optional
+fallback and local rules supplement model claims. If neither model provider is
+available, local extraction is used. If Ollama is
 unavailable, returns malformed or incomplete output, or does not respond within
 the configured 3-second connection / 90-second read timeout, local extraction
 is used. The Requests timeout is not a guaranteed wall-clock deadline. Each
@@ -26,6 +28,22 @@ The analysis response also includes `gemma_provenance`, which records whether
 the model was attempted and accepted, how many claims came from the model or
 deterministic extraction, any unique model contribution after deduplication,
 and a safe failure reason when fallback was required.
+
+To use Gemma 4 through the official Google Gen AI SDK, set the backend key in
+the same terminal used to start Flask:
+
+```powershell
+$env:GEMINI_API_KEY = "your-key"
+$env:FORWARD_CHECK_AI_PROVIDER = "auto"
+.\.venv\Scripts\python.exe app.py
+```
+
+The configured model is `gemma-4-26b-a4b-it`. `FORWARD_CHECK_AI_PROVIDER` may
+be `auto` (the default), `gemini`, or `ollama`. In `auto`, Gemini is preferred
+when `GEMINI_API_KEY` is present; an unavailable or failed Gemini request falls
+back to Ollama without labeling the result as Gemma 4. Set `ollama` to use the
+existing local provider explicitly. `GEMINI_API_KEY` is read only by Flask and
+is never sent to the browser or included in reports.
 
 For a local Ollama run that needs more time to load or generate with Gemma,
 the connection timeout remains short while the read timeout can be increased.

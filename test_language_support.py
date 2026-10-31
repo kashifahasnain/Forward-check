@@ -1,4 +1,5 @@
 import json
+import os
 import unittest
 from unittest.mock import Mock, patch
 
@@ -1133,9 +1134,117 @@ class OfflineClaimAnalysisTests(unittest.TestCase):
         self.assertTrue(provenance["model_attempted"])
         self.assertTrue(provenance["model_response_accepted"])
         self.assertEqual(provenance["accepted_model_claim_count"], 1)
-        self.assertGreaterEqual(provenance["deterministic_claim_count"], 1)
-        self.assertEqual(provenance["unique_model_claim_count"], 0)
-        self.assertTrue(provenance["deterministic_supplementation_used"])
+        self.assertEqual(provenance["deterministic_claim_count"], 0)
+        self.assertEqual(provenance["unique_model_claim_count"], 1)
+        self.assertFalse(provenance["deterministic_supplementation_used"])
+
+    def test_provenance_counts_retained_model_and_deterministic_claims_once(self):
+        message = (
+            "The Constitution came into effect on 26 January 1950. "
+            "The committee was chaired by Dr. B. R. Ambedkar."
+        )
+        model_result = {
+            "claims": [{
+                "claim": "The Constitution came into effect on 26 January 1950.",
+                "evidence": "The Constitution came into effect on 26 January 1950."
+            }],
+            "warning_signals": [],
+            "verification_steps": [],
+            "caution_explanation": "Check the claims."
+        }
+        with patch.object(
+            claim_extractor.requests,
+            "post",
+            return_value=self._mock_ollama(json.dumps(model_result))
+        ):
+            result = claim_extractor.extract_claims(message, "en")
+
+        provenance = result["gemma_provenance"]
+        self.assertEqual(provenance["accepted_model_claim_count"], 1)
+        self.assertEqual(provenance["unique_model_claim_count"], 1)
+        self.assertEqual(provenance["deterministic_claim_count"], 1)
+        self.assertEqual(
+            [item["extraction_method"] for item in result["claims"]],
+            ["ollama", "local_rules"]
+        )
+
+    def test_duplicate_model_and_local_claim_is_not_counted_as_supplement(self):
+        message = "The school will be closed tomorrow."
+        model_result = {
+            "claims": [{
+                "claim": message,
+                "evidence": message
+            }],
+            "warning_signals": [],
+            "verification_steps": [],
+            "caution_explanation": "Check the claim."
+        }
+        with patch.object(
+            claim_extractor.requests,
+            "post",
+            return_value=self._mock_ollama(json.dumps(model_result))
+        ):
+            result = claim_extractor.extract_claims(message, "en")
+
+        provenance = result["gemma_provenance"]
+        self.assertEqual(provenance["accepted_model_claim_count"], 1)
+        self.assertEqual(provenance["unique_model_claim_count"], 1)
+        self.assertEqual(provenance["deterministic_claim_count"], 0)
+
+    def test_claim_entities_are_scoped_to_each_evidence_clause(self):
+        message = (
+            "The Constitution came into effect on 26 January 1950, "
+            "and Dr. B. R. Ambedkar chaired the committee."
+        )
+        model_result = {
+            "claims": [
+                {
+                    "claim": "The Constitution came into effect on 26 January 1950.",
+                    "evidence": message
+                },
+                {
+                    "claim": "Dr. B. R. Ambedkar chaired the committee.",
+                    "evidence": message
+                }
+            ],
+            "warning_signals": [],
+            "verification_steps": [],
+            "caution_explanation": "Check the claims."
+        }
+        with patch.object(
+            claim_extractor.requests,
+            "post",
+            return_value=self._mock_ollama(json.dumps(model_result))
+        ):
+            result = claim_extractor.extract_claims(message, "en")
+
+        claims = result["claims"]
+        first = next(item for item in claims if "Constitution" in item["claim"])
+        second = next(item for item in claims if "Ambedkar" in item["claim"])
+        self.assertEqual(first["entities"]["dates"], ["26 January 1950"])
+        self.assertNotIn("dates", second["entities"])
+        self.assertIn("Dr. B. R. Ambedkar", second["claim"])
+
+    def test_claim_entities_keep_distinct_dates_in_hindi_and_hinglish(self):
+        for language, message in (
+            (
+                "hi",
+                "पहली घटना 12 January 2020 को हुई है। दूसरी घटना 15 March 2021 को हुई है।"
+            ),
+            (
+                "hinglish",
+                "Pehli ghatna 12 January 2020 ko hui hai. Doosri ghatna 15 March 2021 ko hui hai."
+            )
+        ):
+            with self.subTest(language=language):
+                result = claim_extractor.fallback_analysis(message, language)
+                self.assertGreaterEqual(len(result["claims"]), 2)
+                dates = [
+                    item["entities"].get("dates", [])
+                    for item in result["claims"]
+                ]
+                self.assertTrue(any("12 January 2020" in date for date in dates[0]))
+                self.assertTrue(any("15 March 2021" in date for date in dates[1]))
 
     def test_gemma_failure_reports_safe_reason_and_fallback_provenance(self):
         with patch.object(
@@ -1197,6 +1306,91 @@ class OfflineClaimAnalysisTests(unittest.TestCase):
                     result = claim_extractor.extract_claims(message, language)
                 self.assertIn("gemma_provenance", result)
                 self.assertTrue(result["gemma_provenance"]["model_attempted"])
+
+
+class GeminiProviderTests(unittest.TestCase):
+    def test_gemini_claim_keeps_ai_assessment_and_model_identity(self):
+        message = "We could catch a cold by eating ice cream."
+        model_result = {
+            "claims": [{
+                "claim": "Eating ice cream causes the common cold.",
+                "evidence": message,
+                "claim_type": "factual_assertion",
+                "ai_assessment": "Likely false",
+                "ai_explanation": "The common cold is caused by viruses, not ice cream.",
+                "ai_limitations": "This is an AI assessment, not independent source verification."
+            }],
+            "warning_signals": [],
+            "verification_steps": [],
+            "caution_explanation": "Check the claim independently."
+        }
+        with patch.dict(
+            os.environ,
+            {
+                claim_extractor.AI_PROVIDER_ENV: "gemini",
+                claim_extractor.GEMINI_API_KEY_ENV: "test-key"
+            },
+            clear=False
+        ), patch.object(
+            claim_extractor,
+            "_gemini_analysis",
+            return_value=model_result
+        ) as gemini:
+            result = claim_extractor.extract_claims(message, "en")
+
+        gemini.assert_called_once()
+        self.assertEqual(result["ai_provider"], "gemini")
+        self.assertEqual(result["ai_model"], claim_extractor.GEMINI_MODEL_NAME)
+        claim = next(
+            item for item in result["claims"]
+            if item.get("ai_assessment") == "Likely false"
+        )
+        self.assertEqual(claim["ai_provider"], "gemini")
+        self.assertEqual(claim["ai_model"], claim_extractor.GEMINI_MODEL_NAME)
+        self.assertEqual(
+            result["gemma_provenance"]["provider"],
+            "gemini"
+        )
+
+    def test_gemini_failure_uses_ollama_fallback_without_gemini_identity(self):
+        response = Mock(status_code=200)
+        response.json.return_value = {
+            "response": json.dumps({
+                "claims": [{
+                    "claim": "Students will receive free laptops.",
+                    "evidence": "Students will receive free laptops.",
+                    "claim_type": "factual_assertion"
+                }],
+                "warning_signals": [],
+                "verification_steps": [],
+                "caution_explanation": "Check independently."
+            })
+        }
+        with patch.dict(
+            os.environ,
+            {
+                claim_extractor.AI_PROVIDER_ENV: "auto",
+                claim_extractor.GEMINI_API_KEY_ENV: "test-key"
+            },
+            clear=False
+        ), patch.object(
+            claim_extractor,
+            "_gemini_analysis",
+            side_effect=RuntimeError("provider unavailable")
+        ), patch.object(
+            claim_extractor.requests,
+            "post",
+            return_value=response
+        ):
+            result = claim_extractor.extract_claims(
+                "Students will receive free laptops.",
+                "en"
+            )
+
+        self.assertEqual(result["ai_provider"], "ollama")
+        self.assertEqual(result["ai_model"], claim_extractor.MODEL_NAME)
+        self.assertNotEqual(result["ai_model"], claim_extractor.GEMINI_MODEL_NAME)
+        self.assertEqual(result["gemma_provenance"]["provider"], "ollama")
 
 
 class MultilingualRiskTests(unittest.TestCase):

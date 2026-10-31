@@ -92,6 +92,10 @@ const translations = {
         extractionMethodLocal: "This claim was extracted with deterministic local rules; it was not fact-checked.",
         extractionFallback: "Ollama was unavailable or its output could not be used, so local fallback extraction ran. Extraction does not verify claims.",
         extractionMethodOllama: "Ollama assisted with claim extraction only; it did not verify these claims.",
+        aiAssessmentHeading: "Gemma 4 AI assessment",
+        aiAssessmentModel: "AI model: {0}",
+        aiAssessmentExplanation: "AI explanation:",
+        aiAssessmentLimitations: "AI limitations:",
         gemmaContribution: "Gemma assisted with claim extraction. Deterministic local rules supplemented the result where needed. Search, retrieval, evidence assessment and verdicts are separate processes.",
         originalWording: "Original wording:",
         normalizedWording: "Normalized wording:",
@@ -304,6 +308,10 @@ const translations = {
         extractionMethodLocal: "यह दावा स्थानीय नियमों से निकाला गया; इसकी तथ्य-जाँच नहीं हुई।",
         extractionFallback: "Ollama उपलब्ध नहीं था या उसका उत्तर उपयोग नहीं हो सका, इसलिए स्थानीय fallback extraction चला। दावा निकालना सत्यापन नहीं है।",
         extractionMethodOllama: "Ollama ने केवल दावा निकालने में मदद की; उसने दावों का सत्यापन नहीं किया।",
+        aiAssessmentHeading: "Gemma 4 AI आकलन",
+        aiAssessmentModel: "AI मॉडल: {0}",
+        aiAssessmentExplanation: "AI व्याख्या:",
+        aiAssessmentLimitations: "AI सीमाएँ:",
         gemmaContribution: "Gemma ने दावा निकालने में मदद की। जहाँ ज़रूरत थी, स्थानीय deterministic rules ने परिणाम को पूरा किया। Search, retrieval, evidence assessment और verdict अलग प्रक्रियाएँ हैं।",
         originalWording: "मूल शब्द:",
         normalizedWording: "सामान्य रूप:",
@@ -516,6 +524,10 @@ const translations = {
         extractionMethodLocal: "Yeh claim deterministic local rules se nikala gaya; iski fact-checking nahi hui.",
         extractionFallback: "Ollama available nahi tha ya uska output use nahi ho saka, isliye local fallback extraction chala. Extraction claim verify nahi karta.",
         extractionMethodOllama: "Ollama ne sirf claims extract karne mein madad ki; usne claims verify nahi kiye.",
+        aiAssessmentHeading: "Gemma 4 AI assessment",
+        aiAssessmentModel: "AI model: {0}",
+        aiAssessmentExplanation: "AI explanation:",
+        aiAssessmentLimitations: "AI limitations:",
         gemmaContribution: "Gemma ne claims extract karne mein madad ki. Zaroorat par local deterministic rules ne result ko supplement kiya. Search, retrieval, evidence assessment aur verdict alag processes hain.",
         originalWording: "Original wording:",
         normalizedWording: "Normalized wording:",
@@ -992,6 +1004,40 @@ function renderClaims(claimsBox, claims, extractionMethod) {
             addTextElement(card, "p", t("extractionMethodLocal"));
         } else if (item.extraction_method === "ollama") {
             addTextElement(card, "p", t("extractionMethodOllama"));
+        }
+        if (
+            typeof item.ai_assessment === "string"
+            && typeof item.ai_explanation === "string"
+            && item.ai_assessment.trim()
+            && item.ai_explanation.trim()
+        ) {
+            const aiSection = document.createElement("section");
+            aiSection.className = "ai-assessment";
+            addTextElement(aiSection, "h4", t("aiAssessmentHeading"));
+            addTextElement(aiSection, "p", item.ai_assessment.trim());
+            if (typeof item.ai_provider === "string" && item.ai_provider.trim()) {
+                const modelLabel = item.ai_model || (
+                    item.ai_provider === "gemini" ? "gemma-4-26b-a4b-it" : "Ollama"
+                );
+                addTextElement(
+                    aiSection,
+                    "p",
+                    t("aiAssessmentModel", modelLabel)
+                );
+            }
+            addTextElement(
+                aiSection,
+                "p",
+                `${t("aiAssessmentExplanation")} ${item.ai_explanation.trim()}`
+            );
+            if (typeof item.ai_limitations === "string" && item.ai_limitations.trim()) {
+                addTextElement(
+                    aiSection,
+                    "p",
+                    `${t("aiAssessmentLimitations")} ${item.ai_limitations.trim()}`
+                );
+            }
+            card.appendChild(aiSection);
         }
         renderVerdictAssessment(card, item);
         const searchStatusKeys = {
@@ -1762,6 +1808,11 @@ function createShareReport(analysis, metadata = {}) {
                         : item.extraction_method === "ollama"
                             ? "extractionMethodOllama"
                             : "",
+                    aiAssessment: reportText(item.ai_assessment, 80),
+                    aiExplanation: reportText(item.ai_explanation, 500),
+                    aiLimitations: reportText(item.ai_limitations, 300),
+                    aiProvider: reportText(item.ai_provider, 80),
+                    aiModel: reportText(item.ai_model, 120),
                     sources: Array.isArray(item.sources) ? item.sources.slice(0, 3) : [],
                     verdictAssessment: (
                         item.verdict_assessment
@@ -1789,6 +1840,18 @@ function createShareReport(analysis, metadata = {}) {
             }
             if (item.extractionMethodMessage) {
                 lines.push(`  ${t(item.extractionMethodMessage)}`);
+            }
+            if (item.aiAssessment && item.aiExplanation) {
+                lines.push(`  ${t("aiAssessmentHeading")}: ${item.aiAssessment}`);
+                if (item.aiModel || item.aiProvider) {
+                    lines.push(
+                        `  ${t("aiAssessmentModel", item.aiModel || item.aiProvider)}`
+                    );
+                }
+                lines.push(`  ${t("aiAssessmentExplanation")} ${item.aiExplanation}`);
+                if (item.aiLimitations) {
+                    lines.push(`  ${t("aiAssessmentLimitations")} ${item.aiLimitations}`);
+                }
             }
             const verdict = item.verdictAssessment;
             lines.push(

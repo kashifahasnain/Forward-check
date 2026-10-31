@@ -444,6 +444,10 @@ class SourceSearchTests(unittest.TestCase):
         self.assertIn("TAVILY_API_KEY", status["message"])
         self.assertIn("BRAVE_SEARCH_API_KEY", status["message"])
         self.assertEqual(status["provider_used"], [])
+        self.assertEqual(
+            status["provider_configuration"],
+            {"tavily_configured": False, "brave_configured": False}
+        )
         tavily_search.assert_not_called()
         brave_search.assert_not_called()
         self.assertEqual(claims[0]["verdict"], "अपुष्ट")
@@ -484,6 +488,10 @@ class SourceSearchTests(unittest.TestCase):
             )
 
         self.assertEqual(status["provider_used"], ["Tavily Search"])
+        self.assertEqual(
+            status["provider_configuration"],
+            {"tavily_configured": True, "brave_configured": True}
+        )
         self.assertEqual(status["queries_attempted"], 1)
         self.assertEqual(status["source_review"]["provider_requests"], 1)
         self.assertEqual(status["results_found"], 1)
@@ -522,6 +530,10 @@ class SourceSearchTests(unittest.TestCase):
         self.assertEqual(status["provider_used"], [])
         self.assertEqual(status["errors"][0]["provider"], "Tavily Search")
         self.assertEqual(status["errors"][0]["type"], "Timeout")
+        self.assertEqual(
+            status["provider_configuration"],
+            {"tavily_configured": True, "brave_configured": False}
+        )
         self.assertEqual(claims[0]["verdict"], "Unverified")
         self.assertEqual(claims[0]["sources"], [])
         tavily_search.assert_called_once()

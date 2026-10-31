@@ -234,7 +234,7 @@ class TavilySearchProvider:
                 "include_raw_content": False
             },
             headers={
-                "Authorization": f"Bearer {self.api_key}",
+                "Authorization": "Bearer " + self.api_key,
                 "Content-Type": "application/json"
             },
             timeout=(3, 10)
@@ -479,6 +479,13 @@ def _rank_results(results, claim):
     return diverse + remaining
 
 
+def _provider_configuration():
+    return {
+        "tavily_configured": bool(os.environ.get("TAVILY_API_KEY", "").strip()),
+        "brave_configured": bool(os.environ.get("BRAVE_SEARCH_API_KEY", "").strip())
+    }
+
+
 def discover_claim_sources(
     claims,
     language="en",
@@ -488,6 +495,12 @@ def discover_claim_sources(
 ):
     """Attach source leads and conservative claim-level verdict assessments."""
     messages = _MESSAGES.get(language, _MESSAGES["en"])
+    provider_configuration = _provider_configuration()
+    logger.info(
+        "Source search configuration: tavily_present=%s brave_present=%s",
+        provider_configuration["tavily_configured"],
+        provider_configuration["brave_configured"]
+    )
     claim_list = claims if isinstance(claims, list) else []
     claim_list.extend(separate_explicit_opinion_facts(claim_list))
     if not claim_list:
@@ -533,7 +546,8 @@ def discover_claim_sources(
                 "provider_used": [],
                 "queries_attempted": 0,
                 "results_found": 0,
-                "errors": []
+                "errors": [],
+                "provider_configuration": provider_configuration
             }
 
     source_retriever = retriever or getattr(
@@ -879,6 +893,7 @@ def discover_claim_sources(
         "queries_attempted": searchable_claims,
         "results_found": result_count,
         "errors": search_errors,
+        "provider_configuration": provider_configuration,
         "source_review": {
             "search_requests": searchable_claims,
             "queries_attempted": searchable_claims,

@@ -9,6 +9,9 @@ import requests
 
 logger = logging.getLogger(__name__)
 MODEL_NAME = "gemma3:4b"
+GEMINI_MODEL_NAME = "gemma-4-26b-a4b-it"
+AI_PROVIDER_ENV = "FORWARD_CHECK_AI_PROVIDER"
+GEMINI_API_KEY_ENV = "GEMINI_API_KEY"
 OLLAMA_URL = "http://localhost:11434/api/generate"
 OLLAMA_CONNECT_TIMEOUT_SECONDS = 3.0
 OLLAMA_READ_TIMEOUT_SECONDS = 90.0
@@ -158,10 +161,19 @@ def _claim_provenance(
     model_claim_count=0,
     deterministic_claim_count=0,
     unique_model_claim_count=0,
-    failure_reason=None
+    failure_reason=None,
+    provider="ollama",
+    model_name=MODEL_NAME
 ):
+    """Report validated model claims and retained deterministic claims.
+
+    ``accepted_model_claim_count`` is counted after grounding and model-only
+    deduplication. ``unique_model_claim_count`` and
+    ``deterministic_claim_count`` describe claims retained in the final merge.
+    """
     return {
-        "model": MODEL_NAME,
+        "model": model_name,
+        "provider": provider,
         "model_attempted": attempted,
         "model_response_accepted": accepted,
         "deterministic_fallback_used": fallback_used,
@@ -494,7 +506,12 @@ def _dedupe_claims(claims):
             "alleged_speaker",
             "original_language",
             "extraction_method",
-            "uncertainty"
+            "uncertainty",
+            "ai_assessment",
+            "ai_explanation",
+            "ai_limitations",
+            "ai_provider",
+            "ai_model"
         ):
             if field in item:
                 normalized_item[field] = item[field]
@@ -1123,6 +1140,23 @@ def _exact_entity_values(value, message_text):
     return exact_values
 
 
+def _claim_entity_scope(claim, evidence, message_text):
+    scope = evidence.strip() if isinstance(evidence, str) else ""
+    if not scope:
+        scope = claim.strip() if isinstance(claim, str) else ""
+    propositions = _message_propositions(scope)
+    if len(propositions) <= 1 or not isinstance(claim, str):
+        return scope
+
+    claim_tokens = set(re.findall(r"\w+", claim.casefold()))
+    return max(
+        propositions,
+        key=lambda proposition: len(
+            claim_tokens & set(re.findall(r"\w+", proposition.casefold()))
+        )
+    )
+
+
 def _claim_categories(claim_text):
     text = claim_text.casefold()
     topic_terms = {
@@ -1163,6 +1197,11 @@ def _enrich_claim_metadata(claims, message_text, extraction_method="local_rules"
             )
         if not isinstance(evidence, str):
             evidence = ""
+        entity_scope = _claim_entity_scope(
+            normalized.get("claim", ""),
+            evidence,
+            message_text
+        )
 
         original_wording = ""
         for candidate in (
@@ -1181,7 +1220,7 @@ def _enrich_claim_metadata(claims, message_text, extraction_method="local_rules"
             for entity_type, values in raw_entities.items():
                 if not isinstance(entity_type, str):
                     continue
-                exact_values = _exact_entity_values(values, message_text)
+                exact_values = _exact_entity_values(values, entity_scope)
                 if exact_values:
                     entities[entity_type[:40]] = exact_values[:10]
         for entity_type, pattern in (
@@ -1214,7 +1253,7 @@ def _enrich_claim_metadata(claims, message_text, extraction_method="local_rules"
         ):
             extracted = [
                 match.group(0)
-                for match in re.finditer(pattern, message_text, re.IGNORECASE)
+                for match in re.finditer(pattern, entity_scope, re.IGNORECASE)
             ]
             if extracted:
                 entities[entity_type] = list(dict.fromkeys(extracted))[:10]
@@ -1418,7 +1457,12 @@ def _normalize_model_claims(model_claims):
                 "alleged_speaker",
                 "original_language",
                 "extraction_method",
-                "uncertainty"
+                "uncertainty",
+                "ai_assessment",
+                "ai_explanation",
+                "ai_limitations",
+                "ai_provider",
+                "ai_model"
             ):
                 if field in item:
                     normalized_item[field] = item[field]
@@ -1619,8 +1663,190 @@ def _model_claim_items(model_claims):
     return []
 
 
+_AI_ASSESSMENTS = {
+    "Likely true",
+    "Likely false",
+    "Misleading",
+    "Uncertain"
+}
+
+
+def _ai_provider_setting():
+    setting = os.environ.get(AI_PROVIDER_ENV, "auto").strip().casefold()
+    return setting if setting in {"auto", "gemini", "ollama"} else "auto"
+
+
+def _gemini_claim_prompt(message_text, language):
+    return f"""
+Assess factual claims in this message using your general knowledge. Extract up to
+3 claims and return only compact JSON. Do not invent citations, URLs, source
+retrieval, or details about the sender. Keep claims grounded in the message.
+For each claim return:
+{{
+  "claim": "claim wording",
+  "claim_type": "factual_assertion|question_containing_claim",
+  "original_wording": "exact wording from the message",
+  "evidence": "exact wording from the message",
+  "reason_to_check": "brief reason",
+  "ai_assessment": "Likely true|Likely false|Misleading|Uncertain",
+  "ai_explanation": "brief explanation of the assessment",
+  "ai_limitations": "state that this is an AI assessment, not independent source verification"
+}}
+Use only text present in the message for claim and evidence. The explanation may
+use general factual knowledge, but must not claim that a source was checked.
+Write user-facing text in {LANGUAGE_NAMES[language]}.
+Message:
+{message_text[:3000]}
+"""
+
+
+def _parse_model_analysis(model_text, localized):
+    parsed_analysis = json.loads(model_text)
+    if isinstance(parsed_analysis, list):
+        return {
+            "claims": parsed_analysis,
+            "warning_signals": [],
+            "verification_steps": [],
+            "caution_explanation": localized["caution"]
+        }
+    if isinstance(parsed_analysis, dict):
+        if any(
+            key in parsed_analysis
+            for key in ("claim", "statement", "text", "description")
+        ):
+            return {
+                "claims": [parsed_analysis],
+                "warning_signals": [],
+                "verification_steps": [],
+                "caution_explanation": localized["caution"]
+            }
+        return parsed_analysis
+    raise ValueError("AI analysis was not an object or list.")
+
+
+def _gemini_analysis(message_text, language, api_key):
+    try:
+        from google import genai
+        from google.genai import types
+    except ImportError as error:
+        raise RuntimeError("gemini_sdk_missing") from error
+
+    client = genai.Client(api_key=api_key)
+    response = client.models.generate_content(
+        model=GEMINI_MODEL_NAME,
+        contents=_gemini_claim_prompt(message_text, language),
+        config=types.GenerateContentConfig(
+            temperature=0.1,
+            response_mime_type="application/json"
+        )
+    )
+    model_text = getattr(response, "text", None)
+    if not isinstance(model_text, str) or not model_text.strip():
+        raise ValueError("Gemini returned an empty response.")
+    return _parse_model_analysis(model_text, LOCALIZED_TEXT[language])
+
+
+def _validated_ai_fields(item):
+    assessment = item.get("ai_assessment")
+    if assessment not in _AI_ASSESSMENTS:
+        return {}
+    explanation = item.get("ai_explanation")
+    limitations = item.get("ai_limitations")
+    if not isinstance(explanation, str) or not explanation.strip():
+        return {}
+    if not isinstance(limitations, str) or not limitations.strip():
+        return {}
+    return {
+        "ai_assessment": assessment,
+        "ai_explanation": " ".join(explanation.split()).strip()[:1000],
+        "ai_limitations": " ".join(limitations.split()).strip()[:500]
+    }
+
+
+def _merge_model_analysis(
+    analysis,
+    fallback,
+    message_text,
+    localized,
+    provider,
+    model_name,
+    extraction_method
+):
+    analysis.setdefault("warning_signals", [])
+    analysis.setdefault("verification_steps", [])
+    analysis.setdefault("caution_explanation", localized["caution"])
+    model_claims = analysis.get("claims", [])
+    if (
+        not isinstance(model_claims, (list, dict, str))
+        or not isinstance(analysis.get("warning_signals"), list)
+        or not isinstance(analysis.get("verification_steps"), list)
+        or not isinstance(analysis["caution_explanation"], str)
+        or not analysis["caution_explanation"].strip()
+    ):
+        raise ValueError("AI analysis is missing required fields.")
+
+    claims = _ground_model_claims(model_claims, message_text)
+    accepted_model_claim_count = len(claims)
+    if provider == "gemini":
+        for claim in claims:
+            ai_fields = _validated_ai_fields(claim)
+            if not ai_fields:
+                continue
+            claim.update(ai_fields)
+            claim["ai_provider"] = provider
+            claim["ai_model"] = model_name
+    claims = _enrich_claim_metadata(
+        claims,
+        message_text,
+        extraction_method=extraction_method
+    )
+    merged_claims = _dedupe_claims(claims + fallback["claims"])
+    retained_model_claims = [
+        item for item in merged_claims
+        if item.get("extraction_method") == extraction_method
+    ]
+    retained_deterministic_claims = [
+        item for item in merged_claims
+        if item.get("extraction_method") == "local_rules"
+    ]
+    model_steps = [
+        " ".join(step.split()).strip()
+        for step in analysis["verification_steps"]
+        if isinstance(step, str) and step.strip()
+    ][:5]
+    verification_steps = model_steps or fallback["verification_steps"]
+    verification_steps = [
+        _safe_model_text(
+            step,
+            message_text,
+            fallback["verification_steps"][index]
+            if index < len(fallback["verification_steps"])
+            else localized["step1"]
+        )
+        for index, step in enumerate(verification_steps)
+    ]
+    verification_steps = [step for step in verification_steps if step] or fallback["verification_steps"]
+    return {
+        "claims": merged_claims,
+        "warning_signals": _merge_signals(
+            _normalize_model_signals(analysis["warning_signals"], message_text),
+            fallback["warning_signals"]
+        ),
+        "verification_steps": verification_steps,
+        "caution_explanation": _safe_model_text(
+            analysis["caution_explanation"],
+            message_text,
+            fallback["caution_explanation"]
+        ),
+        "accepted_model_claim_count": accepted_model_claim_count,
+        "unique_model_claim_count": len(retained_model_claims),
+        "deterministic_claim_count": len(retained_deterministic_claims),
+        "deterministic_supplementation_used": bool(retained_deterministic_claims)
+    }
+
+
 def extract_claims(message_text, language="en"):
-    """Analyse OCR text with Ollama and always return the same JSON structure."""
+    """Analyse OCR text with the configured AI provider and local fallback."""
     language = language if language in LANGUAGE_NAMES else "en"
     localized = LOCALIZED_TEXT[language]
     if not isinstance(message_text, str) or not message_text.strip():
@@ -1642,6 +1868,48 @@ def extract_claims(message_text, language="en"):
         }
 
     fallback = fallback_analysis(message_text, language)
+    provider_setting = _ai_provider_setting()
+    gemini_key = os.environ.get(GEMINI_API_KEY_ENV, "").strip()
+    if provider_setting in {"auto", "gemini"} and gemini_key:
+        try:
+            gemini_analysis = _gemini_analysis(message_text, language, gemini_key)
+            merged = _merge_model_analysis(
+                gemini_analysis,
+                fallback,
+                message_text,
+                localized,
+                "gemini",
+                GEMINI_MODEL_NAME,
+                "gemini"
+            )
+            return {
+                "claims": merged["claims"],
+                "warning_signals": merged["warning_signals"],
+                "verification_steps": merged["verification_steps"],
+                "verification_links": fallback["verification_links"],
+                "disclaimer": localized["disclaimer"],
+                "caution_explanation": merged["caution_explanation"],
+                "extraction_method": "gemini_assisted",
+                "ai_provider": "gemini",
+                "ai_model": GEMINI_MODEL_NAME,
+                "gemma_provenance": _claim_provenance(
+                    attempted=True,
+                    accepted=True,
+                    fallback_used=False,
+                    fallback_supplemented=merged["deterministic_supplementation_used"],
+                    model_claim_count=merged["accepted_model_claim_count"],
+                    deterministic_claim_count=merged["deterministic_claim_count"],
+                    unique_model_claim_count=merged["unique_model_claim_count"],
+                    provider="gemini",
+                    model_name=GEMINI_MODEL_NAME
+                )
+            }
+        except Exception as error:
+            logger.warning(
+                "Gemini extraction failed: category=%s",
+                type(error).__name__
+            )
+
     requested_language = LANGUAGE_NAMES[language]
     prompt = f"""
 Extract up to 3 factual claims from this message. Preserve meaning, language,
@@ -1739,16 +2007,15 @@ Use [] when there are no factual claims. Message:
                 extraction_method="ollama"
             )
         merged_claims = _dedupe_claims(claims + fallback["claims"])
-        deterministic_claim_keys = {
-            _claim_key(item.get("claim", ""))
-            for item in fallback["claims"]
-            if isinstance(item, dict)
-        }
-        unique_model_claim_count = sum(
-            1
-            for item in claims
-            if _claim_key(item.get("claim", "")) not in deterministic_claim_keys
-        )
+        retained_model_claims = [
+            item for item in merged_claims
+            if item.get("extraction_method") == "ollama"
+        ]
+        retained_deterministic_claims = [
+            item for item in merged_claims
+            if item.get("extraction_method") == "local_rules"
+        ]
+        unique_model_claim_count = len(retained_model_claims)
 
         detected_signals = fallback["warning_signals"]
         model_signals = _normalize_model_signals(
@@ -1797,14 +2064,18 @@ Use [] when there are no factual claims. Message:
             "disclaimer": localized["disclaimer"],
             "caution_explanation": caution_explanation,
             "extraction_method": "ollama_assisted",
+            "ai_provider": "ollama",
+            "ai_model": MODEL_NAME,
             "gemma_provenance": _claim_provenance(
                 attempted=True,
                 accepted=True,
                 fallback_used=False,
-                fallback_supplemented=bool(fallback["claims"]),
+                fallback_supplemented=bool(retained_deterministic_claims),
                 model_claim_count=accepted_model_claim_count,
-                deterministic_claim_count=len(fallback["claims"]),
-                unique_model_claim_count=unique_model_claim_count
+                deterministic_claim_count=len(retained_deterministic_claims),
+                unique_model_claim_count=unique_model_claim_count,
+                provider="ollama",
+                model_name=MODEL_NAME
             )
         }
 
