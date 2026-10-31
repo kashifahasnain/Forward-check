@@ -105,6 +105,7 @@ class LanguageRouteTests(unittest.TestCase):
 class OfflineClaimAnalysisTests(unittest.TestCase):
     def _mock_ollama(self, response_text):
         response = Mock()
+        response.status_code = 200
         response.json.return_value = {"response": response_text}
         response.raise_for_status.return_value = None
         return response
@@ -836,6 +837,112 @@ class OfflineClaimAnalysisTests(unittest.TestCase):
                 self.assertTrue(result["disclaimer"].startswith("Forward Check claims"))
                 self.assertTrue(result["warning_signals"])
 
+    def test_ollama_timeout_uses_configured_connection_and_read_values(self):
+        message = "Students will receive free laptops."
+        with (
+            patch.dict(
+                "os.environ",
+                {
+                    "OLLAMA_CONNECT_TIMEOUT_SECONDS": "3",
+                    "OLLAMA_READ_TIMEOUT_SECONDS": "60"
+                },
+                clear=False
+            ),
+            patch.object(
+                claim_extractor.requests,
+                "post",
+                side_effect=claim_extractor.requests.Timeout("offline test")
+            ) as post,
+            self.assertLogs("modules.claim_extractor", level="INFO") as logs
+        ):
+            result = claim_extractor.extract_claims(message)
+
+        self.assertEqual(post.call_args.kwargs["timeout"], (3.0, 60.0))
+        self.assertIn(
+            "connect_timeout=3.0s read_timeout=60.0s",
+            "\n".join(logs.output)
+        )
+        self.assertEqual(
+            result["gemma_provenance"]["failure_reason"],
+            "timeout"
+        )
+
+    def test_ollama_request_logs_safe_timeout_and_elapsed_diagnostics(self):
+        with (
+            patch.object(
+                claim_extractor.requests,
+                "post",
+                side_effect=claim_extractor.requests.Timeout("private message")
+            ),
+            self.assertLogs("modules.claim_extractor", level="WARNING") as logs
+        ):
+            claim_extractor.extract_claims("A private message with secret text.")
+
+        output = "\n".join(logs.output)
+        self.assertIn("category=timeout", output)
+        self.assertIn("status=None", output)
+        self.assertIn("elapsed_seconds=", output)
+        self.assertNotIn("private message", output)
+
+    def test_ollama_request_uses_bounded_generation_options(self):
+        response = self._mock_ollama(json.dumps({
+            "claims": [],
+            "warning_signals": [],
+            "verification_steps": [],
+            "caution_explanation": "Check the claim independently."
+        }))
+        with patch.object(
+            claim_extractor.requests,
+            "post",
+            return_value=response
+        ) as post, self.assertLogs(
+            "modules.claim_extractor", level="WARNING"
+        ) as logs:
+            claim_extractor.extract_claims("A claim needs checking.")
+
+        options = post.call_args.kwargs["json"]["options"]
+        self.assertEqual(options["num_predict"], 256)
+        self.assertEqual(options["num_ctx"], 1536)
+        self.assertIn("status=200", "\n".join(logs.output))
+
+    def test_invalid_ollama_timeout_configuration_uses_safe_defaults(self):
+        with patch.dict(
+            "os.environ",
+            {
+                "OLLAMA_CONNECT_TIMEOUT_SECONDS": "not-a-number",
+                "OLLAMA_READ_TIMEOUT_SECONDS": "-10"
+            },
+            clear=False
+        ):
+            self.assertEqual(
+                claim_extractor.ollama_timeout(),
+                (claim_extractor.OLLAMA_CONNECT_TIMEOUT_SECONDS,
+                 claim_extractor.OLLAMA_READ_TIMEOUT_SECONDS)
+            )
+
+    def test_successful_gemma_response_uses_ollama_assisted_extraction(self):
+        message = "Students will receive free laptops."
+        model_result = {
+            "claims": [{
+                "claim": message,
+                "claim_type": "factual_assertion",
+                "original_wording": message,
+                "evidence": message
+            }],
+            "warning_signals": [],
+            "verification_steps": ["Compare this claim with an original source."],
+            "caution_explanation": "The message makes a factual claim."
+        }
+        with patch.object(
+            claim_extractor.requests,
+            "post",
+            return_value=self._mock_ollama(json.dumps(model_result))
+        ):
+            result = claim_extractor.extract_claims(message)
+
+        self.assertEqual(result["extraction_method"], "ollama_assisted")
+        self.assertTrue(result["gemma_provenance"]["model_response_accepted"])
+
     def test_incomplete_json_uses_fallback_instead_of_an_empty_report(self):
         message = "Students will receive free laptops."
         incomplete = self._mock_ollama(json.dumps({"claims": [], "warning_signals": []}))
@@ -855,6 +962,129 @@ class OfflineClaimAnalysisTests(unittest.TestCase):
         self.assertEqual(result["claims"], [])
         self.assertIn("Forward Check", result["disclaimer"])
 
+    def test_hinglish_historical_sentence_has_grounded_local_fallback_claim(self):
+        message = (
+            "Bharat ka Samvidhan 26 January 1950 ko lagu hua tha, "
+            "aur Dr. B. R. Ambedkar Drafting Committee ke Chairman the."
+        )
+        with patch.object(
+            claim_extractor.requests,
+            "post",
+            side_effect=claim_extractor.requests.Timeout("offline")
+        ):
+            result = claim_extractor.extract_claims(message, "en")
+
+        self.assertEqual(result["extraction_method"], "local_rules")
+        self.assertTrue(result["claims"])
+        self.assertTrue(
+            any("Samvidhan" in claim["evidence"] for claim in result["claims"])
+        )
+        self.assertEqual(
+            result["claims"][0]["original_language"],
+            "hinglish"
+        )
+
+    def test_initials_and_clause_split_preserve_two_hinglish_claims(self):
+        message = (
+            "Bharat ka Samvidhan 26 January 1950 ko lagu hua tha, "
+            "aur Dr. B. R. Ambedkar Drafting Committee ke Chairman the."
+        )
+        self.assertEqual(
+            claim_extractor._message_sentences(message),
+            [message]
+        )
+        claims = claim_extractor.fallback_analysis(message)["claims"]
+        self.assertEqual(len(claims), 2)
+        self.assertEqual(
+            [claim["original_language"] for claim in claims],
+            ["hinglish", "hinglish"]
+        )
+        self.assertIn("Dr. B. R. Ambedkar", claims[1]["claim"])
+        self.assertNotIn("aur Dr.", claims[1]["claim"])
+
+    def test_model_claims_remove_partial_deterministic_duplicates(self):
+        message = (
+            "Bharat ka Samvidhan 26 January 1950 ko lagu hua tha, "
+            "aur Dr. B. R. Ambedkar Drafting Committee ke Chairman the."
+        )
+        model_result = {
+            "claims": [
+                {
+                    "claim": "Bharat ka Samvidhan 26 January 1950 ko lagu hua tha.",
+                    "evidence": "Bharat ka Samvidhan 26 January 1950 ko lagu hua tha"
+                },
+                {
+                    "claim": (
+                        "Bharat ka Samvidhan 26 January 1950 ko lagu hua tha, "
+                        "aur Dr."
+                    ),
+                    "evidence": (
+                        "Bharat ka Samvidhan 26 January 1950 ko lagu hua tha, "
+                        "aur Dr."
+                    )
+                },
+                {
+                    "claim": "Ambedkar Drafting Committee ke Chairman the.",
+                    "evidence": "Ambedkar Drafting Committee ke Chairman the."
+                }
+            ],
+            "warning_signals": [],
+            "verification_steps": [],
+            "caution_explanation": "Check the claims independently."
+        }
+        with patch.object(
+            claim_extractor.requests,
+            "post",
+            return_value=self._mock_ollama(json.dumps(model_result))
+        ):
+            result = claim_extractor.extract_claims(message, "en")
+
+        claims = [item["claim"] for item in result["claims"]]
+        self.assertEqual(len(claims), 2)
+        self.assertTrue(any("Dr. B. R. Ambedkar" in claim for claim in claims))
+        self.assertFalse(any(claim.endswith("aur Dr.") for claim in claims))
+
+    def test_claim_deduplication_keeps_distinct_predicates(self):
+        claims = claim_extractor._dedupe_claims([
+            {"claim": "Alice was born in 1990.", "reason_to_check": "Check it."},
+            {"claim": "Alice won an award in 1990.", "reason_to_check": "Check it."}
+        ])
+
+        self.assertEqual(len(claims), 2)
+
+    def test_hinglish_detection_requires_hindi_markers(self):
+        self.assertEqual(
+            claim_extractor.detect_message_language(
+                "Bharat ka Samvidhan 26 January 1950 ko lagu hua tha."
+            ),
+            "hinglish"
+        )
+        self.assertEqual(
+            claim_extractor.detect_message_language(
+                "The Constitution came into force on 26 January 1950."
+            ),
+            "en"
+        )
+
+    def test_default_english_report_detects_hinglish_text(self):
+        message = "Bharat ka Samvidhan 26 January 1950 ko lagu hua tha."
+        analysis = {
+            "claims": [],
+            "warning_signals": [],
+            "verification_steps": ["Check an original source."],
+            "verification_links": [],
+            "disclaimer": "Claims need independent verification.",
+            "caution_explanation": "Pause and check independently."
+        }
+        with patch.object(app, "extract_claims", return_value=analysis):
+            response = app.app.test_client().post(
+                "/analyse",
+                data={"message": message, "language": "en"}
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["language"], "hinglish")
+
     def test_prompt_requests_selected_language_and_exact_evidence(self):
         model_result = {
             "claims": [],
@@ -873,6 +1103,100 @@ class OfflineClaimAnalysisTests(unittest.TestCase):
         self.assertIn("natural, easy-to-understand Hindi written in Devanagari", prompt)
         self.assertIn("Copy evidence exactly", prompt)
         self.assertEqual(result["verification_steps"], model_result["verification_steps"])
+
+    def test_successful_gemma_response_reports_accepted_and_unique_contribution(self):
+        message = "Students will receive ₹10,000 on 15 August in Delhi."
+        model_result = {
+            "claims": [{
+                "claim": message,
+                "claim_type": "factual_assertion",
+                "original_wording": message,
+                "evidence": message,
+                "entities": {
+                    "dates": ["15 August"],
+                    "locations": ["Delhi"],
+                    "amounts": ["₹10,000"]
+                }
+            }],
+            "warning_signals": [],
+            "verification_steps": ["Compare the date and amount with an original source."],
+            "caution_explanation": "The wording includes a specific amount and date."
+        }
+        with patch.object(
+            claim_extractor.requests,
+            "post",
+            return_value=self._mock_ollama(json.dumps(model_result))
+        ):
+            result = claim_extractor.extract_claims(message, "en")
+
+        provenance = result["gemma_provenance"]
+        self.assertTrue(provenance["model_attempted"])
+        self.assertTrue(provenance["model_response_accepted"])
+        self.assertEqual(provenance["accepted_model_claim_count"], 1)
+        self.assertGreaterEqual(provenance["deterministic_claim_count"], 1)
+        self.assertEqual(provenance["unique_model_claim_count"], 0)
+        self.assertTrue(provenance["deterministic_supplementation_used"])
+
+    def test_gemma_failure_reports_safe_reason_and_fallback_provenance(self):
+        with patch.object(
+            claim_extractor.requests,
+            "post",
+            side_effect=claim_extractor.requests.Timeout("offline test")
+        ):
+            result = claim_extractor.extract_claims("Students will receive free laptops.")
+
+        provenance = result["gemma_provenance"]
+        self.assertTrue(provenance["model_attempted"])
+        self.assertFalse(provenance["model_response_accepted"])
+        self.assertTrue(provenance["deterministic_fallback_used"])
+        self.assertEqual(provenance["failure_reason"], "timeout")
+        self.assertNotIn("offline test", str(provenance))
+
+    def test_unsafe_gemma_explanation_is_replaced_without_invented_amount(self):
+        model_result = {
+            "claims": [],
+            "warning_signals": [],
+            "verification_steps": [
+                "The claim was independently verified as true for ₹999."
+            ],
+            "caution_explanation": "This is definitely false and a scam."
+        }
+        with patch.object(
+            claim_extractor.requests,
+            "post",
+            return_value=self._mock_ollama(json.dumps(model_result))
+        ):
+            result = claim_extractor.extract_claims(
+                "Students should check this claim.", "en"
+            )
+
+        self.assertNotIn("independently verified", " ".join(result["verification_steps"]))
+        self.assertNotIn("₹999", " ".join(result["verification_steps"]))
+        self.assertNotIn("definitely false", result["caution_explanation"])
+        self.assertNotIn("scam", result["caution_explanation"])
+
+    def test_gemma_claim_provenance_is_available_for_hindi_and_hinglish(self):
+        model_result = {
+            "claims": [],
+            "warning_signals": [],
+            "verification_steps": [],
+            "caution_explanation": "दावे की सावधानी से जाँच करें।"
+        }
+        for language, message in (
+            ("hi", "सभी छात्रों को सहायता मिलेगी।"),
+            ("hinglish", "Sabhi students ko madad milegi.")
+        ):
+            with self.subTest(language=language):
+                with patch.object(
+                    claim_extractor.requests,
+                    "post",
+                    return_value=self._mock_ollama(
+                        json.dumps(model_result, ensure_ascii=False)
+                    )
+                ):
+                    result = claim_extractor.extract_claims(message, language)
+                self.assertIn("gemma_provenance", result)
+                self.assertTrue(result["gemma_provenance"]["model_attempted"])
 
 
 class MultilingualRiskTests(unittest.TestCase):

@@ -18,10 +18,66 @@ Open the project folder in VS Code and use its integrated PowerShell terminal:
 Open the local address printed by Flask. Ollama is optional: when available, it
 assists with extraction, and local rules supplement its claims. If Ollama is
 unavailable, returns malformed or incomplete output, or does not respond within
-the configured 3-second connection / 12-second read timeout, local extraction
+the configured 3-second connection / 90-second read timeout, local extraction
 is used. The Requests timeout is not a guaranteed wall-clock deadline. Each
 claim identifies whether local rules or Ollama-assisted extraction produced it;
 Ollama only assists extraction and does not verify claims.
+The analysis response also includes `gemma_provenance`, which records whether
+the model was attempted and accepted, how many claims came from the model or
+deterministic extraction, any unique model contribution after deduplication,
+and a safe failure reason when fallback was required.
+
+For a local Ollama run that needs more time to load or generate with Gemma,
+the connection timeout remains short while the read timeout can be increased.
+The defaults are 3 seconds for connection and 90 seconds for reading. Values
+must be between 0.1 and 300 seconds; invalid values use the defaults. In a
+Windows CMD terminal, configure a 60-second read timeout like this:
+
+```cmd
+set OLLAMA_CONNECT_TIMEOUT_SECONDS=3
+set OLLAMA_READ_TIMEOUT_SECONDS=60
+.venv\Scripts\python.exe app.py
+```
+
+These settings do not retry timed-out requests and do not create an unbounded
+wait. When the read timeout is reached, deterministic local extraction is used.
+The Gemma request also uses a bounded generation budget (`num_predict=256`)
+and context window (`num_ctx=1536`) to reduce unnecessary local inference work
+while retaining claims, warning signals, verification steps, and caution
+explanations. The Flask log records only effective timeout values, elapsed
+request duration, and a safe failure category; it never records the submitted
+message or complete prompt.
+
+To confirm which timeout a running Flask process is using, set the variables
+before starting it and watch the Flask terminal while submitting a message:
+
+```cmd
+set OLLAMA_CONNECT_TIMEOUT_SECONDS=3
+set OLLAMA_READ_TIMEOUT_SECONDS=60
+.venv\Scripts\python.exe app.py
+```
+
+The log should show `connect_timeout=3.0s read_timeout=60.0s` when the request
+starts, followed by a status and elapsed duration. A slow local model can still take tens of seconds: a reported 31.7
+seconds is below a 60-second read timeout and is realistic for a cold
+`gemma3:4b` load on modest hardware. It is not a guarantee that every request
+will finish within 60 seconds.
+
+For a safe comparison with Ollama's minimal API request, use a second Windows
+CMD window while Flask is running:
+
+```cmd
+curl.exe http://localhost:11434/api/generate ^
+  -H "Content-Type: application/json" ^
+  -d "{\"model\":\"gemma3:4b\",\"prompt\":\"Return JSON with an empty claims array.\",\"stream\":false,\"format\":\"json\",\"options\":{\"temperature\":0.1,\"num_predict\":64,\"num_ctx\":512},\"keep_alive\":\"10m\"}"
+```
+
+Compare that response duration with the Flask terminal's
+`Gemma extraction request completed: status=... elapsed_seconds=...` line.
+The Flask request intentionally has a larger prompt and output budget than
+this diagnostic request, so it is not an exact apples-to-apples benchmark.
+Use only non-sensitive test text and do not paste user messages into shell
+history or logs.
 The Flask development server runs with debug mode off by default. To enable the
 interactive debugger for local development only, set `$env:FLASK_DEBUG = "1"`
 before starting it; never enable this debugger on a network-facing deployment.

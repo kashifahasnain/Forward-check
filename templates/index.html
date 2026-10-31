@@ -9,37 +9,73 @@
 
 <body>
     <header>
-        <h1>Forward Check</h1>
-        <p data-i18n="tagline">Think before you forward.</p>
+        <div class="site-header">
+            <a class="brand" href="/" aria-label="Forward Check home">
+                <span class="brand-mark" aria-hidden="true">FC</span>
+                <span>
+                    <strong>Forward Check</strong>
+                    <small data-i18n="tagline">Think before you forward.</small>
+                </span>
+            </a>
+            <nav class="site-nav" aria-label="Primary navigation">
+                <a href="/" data-i18n="navHome">Home</a>
+                <a href="#how-it-works" data-i18n="navHowItWorks">How It Works</a>
+                <a href="#about" data-i18n="navAbout">About</a>
+            </nav>
+            <div class="header-rule" aria-hidden="true"></div>
+            <p class="header-note">Evidence-led message review</p>
+        </div>
     </header>
 
     <main>
-        <section class="upload-card">
-            <h2 data-i18n="pageHeading">Check a Forwarded Message</h2>
-
-            <p data-i18n="pageIntro">
-                Upload a screenshot or paste message text to identify claims,
-                possible warning signals, and ways to verify it.
+        <section class="hero" aria-labelledby="hero-heading">
+            <p class="eyebrow">MESSAGE VERIFICATION</p>
+            <h1 id="hero-heading" data-i18n="heroTitle">Verify What You See</h1>
+            <p class="hero-copy" data-i18n="pageIntro">
+                Check claims. Explore evidence. Make informed decisions.
             </p>
+            <a class="hero-action" href="#checking-section" data-i18n="startChecking">Start Checking</a>
+        </section>
 
-            <label for="language-select" data-i18n="languageLabel">Report language</label>
-            <select id="language-select" name="language">
-                <option value="en">English</option>
-                <option value="hi">हिंदी</option>
-                <option value="hinglish">Hinglish</option>
-            </select>
+        <section class="info-strip" id="how-it-works" aria-labelledby="how-heading">
+            <div>
+                <p class="eyebrow">HOW IT WORKS</p>
+                <h2 id="how-heading" data-i18n="howHeading">A careful way to review a forwarded claim.</h2>
+            </div>
+            <p data-i18n="howCopy">Paste text or upload a screenshot. Forward Check identifies claims, warning signals, and practical ways to check the message. Optional external search can provide source leads, but snippets are not proof.</p>
+        </section>
+
+        <section class="upload-card" id="checking-section" aria-labelledby="input-heading">
+            <div class="section-heading">
+                <div>
+                    <p class="eyebrow">START HERE</p>
+                    <h2 id="input-heading" data-i18n="pageHeading">Check a Forwarded Message</h2>
+                </div>
+                <span class="step-label">01</span>
+            </div>
+
+            <div class="control-row">
+                <label for="language-select" data-i18n="languageLabel">Report language</label>
+                <select id="language-select" name="language">
+                    <option value="en">English</option>
+                    <option value="hi">हिंदी</option>
+                    <option value="hinglish">Hinglish</option>
+                </select>
+            </div>
 
             <label class="source-search-option" for="source-search-enabled">
                 <input id="source-search-enabled" type="checkbox">
                 <span data-i18n="sourceSearchOptIn">
                     Allow sending extracted claims, available speaker/context
-                    details, and relevant entities to Brave Search for source
-                    leads. Search snippets are not verification.
+                    details, and relevant entities to configured external
+                    search providers (Tavily, with optional Brave fallback)
+                    for source leads. Search snippets are not verification.
                 </span>
             </label>
 
-            <section class="input-option" aria-labelledby="paste-heading">
+            <section class="input-option paste-option" aria-labelledby="paste-heading">
                 <h3 id="paste-heading" data-i18n="pasteHeading">Paste a message or post</h3>
+                <p class="input-hint">Best for text copied from a message, post, or article.</p>
                 <form id="text-form">
                     <label for="message-text" data-i18n="messageLabel">
                         Message text (URLs are analysed as text and are not opened)
@@ -60,6 +96,7 @@
 
             <section class="input-option" aria-labelledby="screenshot-heading">
                 <h3 id="screenshot-heading" data-i18n="uploadHeading">Or upload a screenshot</h3>
+                <p class="input-hint">Use a clear image when the original text cannot be copied.</p>
                 <form id="upload-form">
                     <label for="screenshot" data-i18n="uploadLabel">Upload screenshot</label>
                     <input
@@ -76,8 +113,15 @@
 
             <p id="status" role="status"></p>
 
-            <section id="results" hidden>
-                <h2 data-i18n="extractedHeading">Extracted Message</h2>
+                <section id="results" hidden aria-labelledby="results-heading">
+                    <div class="results-heading">
+                        <div>
+                            <p class="eyebrow">REPORT</p>
+                            <h2 id="results-heading">Analysis results</h2>
+                        </div>
+                        <span class="step-label">02</span>
+                    </div>
+                    <h2 data-i18n="extractedHeading">Extracted Message</h2>
                 <label for="extracted-text" data-i18n="extractedEditHint">Extracted text (edit OCR mistakes, then analyse again)</label>
                 <textarea id="extracted-text" rows="7"></textarea>
                 <button type="button" id="analyse-corrected-button">
@@ -202,6 +246,12 @@
                     independently establish whether a message is true or false.
                 </p>
             </section>
+        </section>
+
+        <section class="about-strip" id="about" aria-labelledby="about-heading">
+            <p class="eyebrow">ABOUT FORWARD CHECK</p>
+            <h2 id="about-heading" data-i18n="aboutHeading">Evidence helps you investigate. It does not decide truth for you.</h2>
+            <p data-i18n="aboutCopy">Results can be incomplete, sources can disagree, and a cautious score is not a truth or fraud probability. URLs are analysed as text and are not automatically opened.</p>
         </section>
     </main>
 

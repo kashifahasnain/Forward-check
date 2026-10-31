@@ -74,6 +74,47 @@ class AnalyseRouteTests(unittest.TestCase):
         self.assertIn(b'data-analyse-url="/analyse"', response.data)
         self.assertIn(b'src="/static/script.js"', response.data)
 
+    def test_search_consent_describes_configured_external_providers(self):
+        response = self.client.get("/")
+
+        self.assertIn(b"Tavily", response.data)
+        self.assertIn(b"optional Brave fallback", response.data)
+        self.assertNotIn(
+            b"to Brave Search for source leads",
+            response.data
+        )
+
+    def test_warning_signal_label_and_url_punctuation_are_localized_in_frontend(self):
+        with open("static/script.js", encoding="utf-8") as script:
+            source = script.read()
+
+        self.assertIn("Government-looking web address", source)
+        self.assertIn("सरकारी जैसा दिखने वाला web address", source)
+        self.assertIn("Government jaisa dikhne wala web address", source)
+
+    def test_url_extraction_removes_quotes_and_sentence_punctuation(self):
+        message = 'Visit "https://example.com/claim?source=forward".'
+
+        with patch.object(app, "extract_claims", return_value=self.analysis):
+            response = self.client.post("/analyse", data={"message": message})
+
+        self.assertEqual(response.status_code, 200)
+        body = response.get_json()
+        self.assertEqual(body["detected_urls"], ["https://example.com/claim?source=forward"])
+        self.assertEqual(body["url_analysis"][0]["url"], body["detected_urls"][0])
+
+    def test_scope_is_used_by_the_copied_report_builder(self):
+        with open("static/script.js", encoding="utf-8") as script:
+            source = script.read()
+
+        self.assertIn(
+            't("scopeHeading"), metadata.analysis_scope.trim()',
+            source
+        )
+        self.assertIn("analysis.gemma_provenance", source)
+        self.assertIn('t("gemmaContribution")', source)
+        self.assertIn("renderGemmaContribution", source)
+
     def test_ollama_timeout_uses_fallback_and_still_returns_json(self):
         with patch(
             "modules.claim_extractor.requests.post",
@@ -88,6 +129,44 @@ class AnalyseRouteTests(unittest.TestCase):
         body = response.get_json()
         self.assertTrue(body["analysis"]["claims"])
         self.assertTrue(body["analysis"]["verification_steps"])
+
+    def test_flask_route_preserves_hinglish_claim_on_ollama_timeout(self):
+        message = (
+            "Bharat ka Samvidhan 26 January 1950 ko lagu hua tha, "
+            "aur Dr. B. R. Ambedkar Drafting Committee ke Chairman the."
+        )
+        with patch(
+            "modules.claim_extractor.requests.post",
+            side_effect=requests.Timeout("offline test")
+        ):
+            response = self.client.post(
+                "/analyse",
+                data={"message": message, "language": "en"}
+            )
+
+        self.assertEqual(response.status_code, 200)
+        analysis = response.get_json()["analysis"]
+        self.assertEqual(analysis["extraction_method"], "local_rules")
+        self.assertEqual(
+            analysis["gemma_provenance"]["failure_reason"],
+            "timeout"
+        )
+        self.assertTrue(analysis["claims"])
+        self.assertTrue(
+            any(
+                claim["original_language"] == "hinglish"
+                for claim in analysis["claims"]
+            )
+        )
+
+    def test_empty_claims_render_one_fallback_explanation(self):
+        with open("static/script.js", encoding="utf-8") as script:
+            source = script.read()
+
+        render_start = source.index("function renderClaims(")
+        render_end = source.index("function renderGemmaContribution(")
+        render_claims = source[render_start:render_end]
+        self.assertNotIn('t("extractionFallback")', render_claims)
 
     def test_unexpected_analysis_error_returns_json_500(self):
         with patch.object(

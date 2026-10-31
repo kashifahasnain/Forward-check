@@ -52,6 +52,50 @@ class SharedPipelineTests(unittest.TestCase):
         self.assertEqual(result["detected_urls"], ["example.xyz"])
         self.assertEqual(result["analysis"]["risk_assessment"]["score"], 0)
 
+    def test_fake_payment_message_exposes_scored_warnings_without_duplicate_points(self):
+        message = (
+            "Congratulations! The Government of India is giving ₹10,000 to every citizen. "
+            "Claim your payment immediately at "
+            '"https://pm-gov-benefits.example.com/claim". '
+            "Enter your Aadhaar number and bank details within 24 hours or your payment "
+            "will be cancelled!"
+        )
+        result = analyze_message(
+            message,
+            claim_analyzer=lambda *_args, **_kwargs: self.analysis
+        )
+        analysis = result["analysis"]
+        risk = analysis["risk_assessment"]
+        categories = {reason["category"] for reason in risk["reasons"]}
+        warning_categories = {
+            signal["signal"] for signal in analysis["warning_signals"]
+        }
+
+        self.assertIn("credential_request", categories)
+        self.assertIn("urgency", categories)
+        self.assertIn("credential_request", warning_categories)
+        self.assertIn("urgency", warning_categories)
+        self.assertEqual(
+            risk["score"],
+            sum(reason["points"] for reason in risk["reasons"])
+        )
+        self.assertEqual(
+            result["detected_urls"],
+            ["https://pm-gov-benefits.example.com/claim"]
+        )
+
+    def test_warning_signal_translations_are_available_for_all_report_languages(self):
+        message = "Enter your Aadhaar number and bank details within 24 hours or cancelled."
+        for language in ("en", "hi", "hinglish"):
+            result = analyze_message(
+                message,
+                language=language,
+                claim_analyzer=lambda *_args, **_kwargs: self.analysis
+            )
+            reasons = result["analysis"]["risk_assessment"]["reasons"]
+            self.assertTrue(reasons)
+            self.assertTrue(all(reason["explanation"] for reason in reasons))
+
     def test_multiple_urls_are_unique_and_individually_inspected(self):
         message = "Read https://example.xyz and www.example.in; then https://example.xyz"
         result = analyze_message(message, claim_analyzer=lambda *_args, **_kwargs: self.analysis)
@@ -93,6 +137,149 @@ class SharedPipelineTests(unittest.TestCase):
         self.assertIn("URL HTTPS", hinglish["url_analysis"][0]["warning_signals"][0]["explanation"])
         self.assertIn("वेबसाइट", hindi["analysis_scope"])
         self.assertIn("Website", hinglish["analysis_scope"])
+
+    def _analysis_for_claim(self, claim, categories=None):
+        return {
+            "claims": [{
+                "claim": claim,
+                "categories": categories or [],
+                "reason_to_check": "Check a source."
+            }],
+            "warning_signals": [],
+            "verification_steps": ["Old generic step."],
+            "verification_links": [],
+            "disclaimer": "Claims need independent verification.",
+            "caution_explanation": "Check independently."
+        }
+
+    def test_search_disabled_scope_says_no_webpages_were_retrieved(self):
+        result = analyze_message(
+            "The Constitution came into effect on 26 January 1950.",
+            claim_analyzer=lambda *_args, **_kwargs: self._analysis_for_claim(
+                "The Constitution came into effect on 26 January 1950.",
+                ["history"]
+            ),
+            source_search_enabled=False
+        )
+
+        self.assertIn("No live source search was requested", result["analysis_scope"])
+        self.assertIn("no webpages were retrieved", result["analysis_scope"])
+
+    def test_failed_search_scope_does_not_claim_pages_were_fetched(self):
+        evidence = {
+            "status": "search_failed",
+            "message": "Search failed.",
+            "source_review": {"retrieved": 0}
+        }
+        with patch("modules.analysis_pipeline.discover_claim_sources", return_value=evidence):
+            result = analyze_message(
+                "A factual claim.",
+                claim_analyzer=lambda *_args, **_kwargs: self._analysis_for_claim(
+                    "A factual claim."
+                ),
+                source_search_enabled=True
+            )
+
+        self.assertIn("no source webpages were retrieved", result["analysis_scope"])
+        self.assertNotIn("retrieved one or more", result["analysis_scope"])
+
+    def test_successful_search_scope_acknowledges_pages_without_verification_claim(self):
+        evidence = {
+            "status": "search_completed",
+            "message": "Search completed.",
+            "source_review": {"retrieved": 1}
+        }
+        with patch("modules.analysis_pipeline.discover_claim_sources", return_value=evidence):
+            result = analyze_message(
+                "The Constitution came into effect on 26 January 1950.",
+                claim_analyzer=lambda *_args, **_kwargs: self._analysis_for_claim(
+                    "The Constitution came into effect on 26 January 1950.",
+                    ["history"]
+                ),
+                source_search_enabled=True
+            )
+
+        self.assertIn("retrieved one or more source webpages", result["analysis_scope"])
+        self.assertIn("did not independently verify claims", result["analysis_scope"])
+
+    def test_historical_guidance_does_not_use_scheme_advice(self):
+        result = analyze_message(
+            "The Constitution came into effect on 26 January 1950.",
+            claim_analyzer=lambda *_args, **_kwargs: self._analysis_for_claim(
+                "The Constitution came into effect on 26 January 1950.",
+                ["history"]
+            )
+        )
+
+        guidance = " ".join(result["analysis"]["verification_steps"]).casefold()
+        self.assertIn("historical records", guidance)
+        self.assertNotIn("eligibility", guidance)
+        self.assertNotIn("fee", guidance)
+        self.assertNotIn("deadline", guidance)
+
+    def test_scheme_guidance_retains_eligibility_fee_and_deadline_checks(self):
+        result = analyze_message(
+            "The scholarship scheme has eligibility, fees and a deadline.",
+            claim_analyzer=lambda *_args, **_kwargs: self._analysis_for_claim(
+                "The scholarship scheme has eligibility, fees and a deadline.",
+                ["government schemes"]
+            )
+        )
+
+        guidance = " ".join(result["analysis"]["verification_steps"]).casefold()
+        self.assertIn("eligibility", guidance)
+        self.assertIn("fees", guidance)
+        self.assertIn("deadline", guidance)
+
+    def test_unclear_topic_gets_neutral_guidance(self):
+        result = analyze_message(
+            "The blue object was seen yesterday.",
+            claim_analyzer=lambda *_args, **_kwargs: self._analysis_for_claim(
+                "The blue object was seen yesterday."
+            )
+        )
+
+        guidance = " ".join(result["analysis"]["verification_steps"]).casefold()
+        self.assertIn("original source", guidance)
+        self.assertNotIn("eligibility", guidance)
+
+    def test_claim_level_historical_guidance_is_used_by_the_report_data(self):
+        result = analyze_message(
+            "The Constitution came into effect on 26 January 1950.",
+            claim_analyzer=lambda *_args, **_kwargs: self._analysis_for_claim(
+                "The Constitution came into effect on 26 January 1950.",
+                ["history"]
+            )
+        )
+
+        reason = result["analysis"]["claims"][0]["reason_to_check"].casefold()
+        self.assertIn("historical records", reason)
+        self.assertIn("date", reason)
+        self.assertNotIn("eligibility", reason)
+
+    def test_claim_level_scheme_guidance_preserves_eligibility_advice(self):
+        result = analyze_message(
+            "The scholarship scheme has eligibility, fees and a deadline.",
+            claim_analyzer=lambda *_args, **_kwargs: self._analysis_for_claim(
+                "The scholarship scheme has eligibility, fees and a deadline.",
+                ["government schemes"]
+            )
+        )
+
+        reason = result["analysis"]["claims"][0]["reason_to_check"].casefold()
+        self.assertIn("eligibility", reason)
+
+    def test_claim_level_unknown_guidance_is_neutral(self):
+        result = analyze_message(
+            "The blue object was seen yesterday.",
+            claim_analyzer=lambda *_args, **_kwargs: self._analysis_for_claim(
+                "The blue object was seen yesterday."
+            )
+        )
+
+        reason = result["analysis"]["claims"][0]["reason_to_check"].casefold()
+        self.assertIn("original source", reason)
+        self.assertNotIn("eligibility", reason)
 
 
 class UrlAnalyzerTests(unittest.TestCase):

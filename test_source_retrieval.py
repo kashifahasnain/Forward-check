@@ -417,6 +417,69 @@ class SourceRetrievalTests(unittest.TestCase):
         self.assertIn(assessment["passages"][0], retrieval["retrieved_text"])
         self.assertEqual(assessment["publication_date"], "2024-06-01")
 
+    def test_different_benefit_amount_is_not_a_contradiction(self):
+        assessment = assess_claim_against_source(
+            {"claim": "The Government of India is giving ₹10,000 to every citizen."},
+            {
+                "retrieval_status": "retrieved",
+                "retrieved_text": (
+                    "A different benefit provides ₹7,000 per month to eligible citizens."
+                ),
+                "partial_content": False
+            }
+        )
+
+        self.assertNotEqual(assessment["status"], "Contradicts")
+        self.assertIn(
+            assessment["status"],
+            {"Insufficient Information", "Does Not Address", "Contextualizes"}
+        )
+
+    def test_same_specific_scheme_with_conflicting_amount_can_contradict(self):
+        assessment = assess_claim_against_source(
+            {"claim": "The PM Kisan scheme gives ₹6,000 to farmers."},
+            {
+                "retrieval_status": "retrieved",
+                "retrieved_text": (
+                    "The PM Kisan scheme gives ₹5,000 to farmers."
+                ),
+                "partial_content": False
+            }
+        )
+
+        self.assertEqual(assessment["status"], "Contradicts")
+
+    def test_unrelated_geographic_context_is_insufficient(self):
+        assessment = assess_claim_against_source(
+            {"claim": "The Government of India is giving ₹10,000 nationwide."},
+            {
+                "retrieval_status": "retrieved",
+                "retrieved_text": (
+                    "A Bihar creator-payment policy provides ₹10,000 to local creators."
+                ),
+                "partial_content": False
+            }
+        )
+
+        self.assertIn(
+            assessment["status"],
+            {"Insufficient Information", "Does Not Address"}
+        )
+
+    def test_superficial_keyword_overlap_is_not_support(self):
+        assessment = assess_claim_against_source(
+            {"claim": "The Government of India is giving ₹10,000 to every citizen."},
+            {
+                "retrieval_status": "retrieved",
+                "retrieved_text": (
+                    "The government website explains how citizens can update contact details."
+                ),
+                "partial_content": False
+            }
+        )
+
+        self.assertNotEqual(assessment["status"], "Supports")
+
     def test_explicit_virus_evidence_is_not_overridden_by_nearby_bacteria_context(self):
         """Regression for the CDC passage fetched during Phase 7 validation."""
         passage = (

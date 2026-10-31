@@ -17,7 +17,8 @@ _RISK_DISCLAIMERS = {
 _CREDENTIAL_WORDS = re.compile(
     r"\b(?:passwords?|passcodes?|otps?|one[- ]time passwords?|pins?|"
     r"cvv|cvc|bank(?:ing)? credentials|account credentials|card details|"
-    r"बैंक विवरण|कार्ड विवरण)\b|(?:पासवर्ड|ओटीपी|पिन)",
+    r"bank details|bank account|aadhaar|aadhar|"
+    r"बैंक विवरण|कार्ड विवरण|आधार|आधार नंबर)\b|(?:पासवर्ड|ओटीपी|पिन)",
     re.IGNORECASE
 )
 _CREDENTIAL_ACTIONS = re.compile(
@@ -33,6 +34,16 @@ _NEGATED_REQUEST = re.compile(
     r"(?:मत|नहीं|कभी न|na|mat|nahi)\s*"
     r".{0,30}\b(?:भेजें|भेजो|साझा करें|दर्ज करें|बताएँ|दीजिए|share|send|enter|provide)\b|"
     r"(?:कभी\s*)?(?:भेजें|भेजो|साझा|दर्ज|बताएँ).{0,20}(?:न करें|मत करें|ना करें)",
+    re.IGNORECASE
+)
+_DEADLINE_THREAT = re.compile(
+    r"\b(?:within|in)\s+\d+\s+(?:hours?|hrs?|minutes?)\b"
+    r".{0,80}\b(?:cancel(?:led|lation)?|expire[sd]?|lose|lost|"
+    r"forfeit(?:ed)?|no longer)\b|"
+    r"\b(?:cancel(?:led|lation)?|expire[sd]?|lose|lost|forfeit(?:ed)?)\b"
+    r".{0,80}\b(?:within|in)\s+\d+\s+(?:hours?|hrs?|minutes?)\b|"
+    r"(?:\d+\s*(?:घंटे|मिनट))[^।.!?]{0,80}"
+    r"(?:रद्द|समाप्त|नहीं मिलेगा|खो देंगे)",
     re.IGNORECASE
 )
 _BENEFIT_TERMS = re.compile(
@@ -140,6 +151,52 @@ def _add_reason(reasons, category, points, explanation):
         })
 
 
+def _reason_evidence(category, text, urls, url_analyses):
+    if category in {
+        "suspicious_url_structure",
+        "unencrypted_http",
+        "authority_word_in_hostname",
+        "lookalike_brand_term"
+    }:
+        for result in url_analyses:
+            if not isinstance(result, dict):
+                continue
+            categories = result.get("risk_categories", [])
+            if any(
+                isinstance(item, dict)
+                and item.get("category") == category
+                for item in categories
+            ):
+                url = result.get("url")
+                if isinstance(url, str) and url:
+                    return [url]
+        return []
+
+    clause_patterns = {
+        "credential_request": (
+            r"\b(?:password|otp|pin|cvv|bank|aadhaar|aadhar)\b"
+        ),
+        "urgency": (
+            r"(?:immediately|right now|within\s+\d+\s+"
+            r"(?:hours?|hrs?|minutes?)|cancel(?:led|lation)?|"
+            r"expire[sd]?|अभी|तुरंत|रद्द)"
+        ),
+        "mass_forwarding": r"(?:forward|share|send)",
+        "unattributed_benefit": (
+            r"(?:benefit|prize|reward|grant|scholarship|मुफ्त|इनाम|लाभ)"
+        )
+    }
+    pattern = clause_patterns.get(category)
+    if not pattern:
+        return []
+    for clause in re.split(r"[.!?;\n।]+", text):
+        if re.search(pattern, clause, re.IGNORECASE):
+            evidence = clause.strip(" \t\r\n\"'")
+            if evidence:
+                return [evidence]
+    return []
+
+
 def calculate_risk(
     message_text,
     warning_signals=None,
@@ -219,6 +276,7 @@ def calculate_risk(
             text,
             re.IGNORECASE
         )
+        or _DEADLINE_THREAT.search(text)
     ):
         _add_reason(
             reasons,
@@ -266,6 +324,16 @@ def calculate_risk(
                 "being named in the text."
             )
         )
+
+    for reason in reasons:
+        evidence = _reason_evidence(
+            reason["category"],
+            text,
+            urls,
+            url_analyses
+        )
+        if evidence:
+            reason["evidence"] = evidence
 
     score = sum(reason["points"] for reason in reasons)
     if score >= 5:

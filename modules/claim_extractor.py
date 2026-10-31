@@ -1,11 +1,19 @@
 import json
+import logging
+import os
 import re
+import time
 
 import requests
 
 
+logger = logging.getLogger(__name__)
 MODEL_NAME = "gemma3:4b"
 OLLAMA_URL = "http://localhost:11434/api/generate"
+OLLAMA_CONNECT_TIMEOUT_SECONDS = 3.0
+OLLAMA_READ_TIMEOUT_SECONDS = 90.0
+_OLLAMA_TIMEOUT_MINIMUM = 0.1
+_OLLAMA_TIMEOUT_MAXIMUM = 300.0
 _URL_IN_MESSAGE = re.compile(
     r"""(?i)(?:\b(?:[a-z][a-z0-9+.-]*://|www\.)[^\s<>'"]+|"""
     r"""(?<![@\w])(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+"""
@@ -93,7 +101,119 @@ LOCALIZED_TEXT = {
         "step4": "Forwarded message ke contact par bharosa karne ke bajaye official contact khud dhoondhein.",
         "caution": "Warning signals ruk kar check karne ki wajah hain; yeh claim ko sahi ya galat prove nahi karte."
     }
+
 }
+
+_MODEL_UNSAFE_TEXT = re.compile(
+    r"\b(?:independently\s+verified|verified\s+as\s+true|proven\s+true|"
+    r"proven\s+false|definitely\s+false|definitely\s+true|fraud(?:ulent)?"
+    r"|scam)\b",
+    re.IGNORECASE
+)
+_MODEL_URL = re.compile(r"https?://[^\s<>'\"]+|www\.[^\s<>'\"]+", re.IGNORECASE)
+_MODEL_NAMED_SOURCE = re.compile(
+    r"\b(?:ministry|government of india|press information bureau|"
+    r"uidai|rbi|official portal|official website)\b",
+    re.IGNORECASE
+)
+
+
+def _configured_timeout(name, default):
+    raw_value = os.environ.get(name)
+    if raw_value is None:
+        return default
+    try:
+        value = float(raw_value)
+    except (TypeError, ValueError):
+        return default
+    if not _OLLAMA_TIMEOUT_MINIMUM <= value <= _OLLAMA_TIMEOUT_MAXIMUM:
+        return default
+    return value
+
+
+def ollama_timeout():
+    return (
+        _configured_timeout(
+            "OLLAMA_CONNECT_TIMEOUT_SECONDS",
+            OLLAMA_CONNECT_TIMEOUT_SECONDS
+        ),
+        _configured_timeout(
+            "OLLAMA_READ_TIMEOUT_SECONDS",
+            OLLAMA_READ_TIMEOUT_SECONDS
+        )
+    )
+_MODEL_UNSUPPORTED_DETAIL = re.compile(
+    r"\b(?:eligibility|eligible|deadline|registration fee|application fee|"
+    r"scholarship|scheme)\b|₹\s*[\d,]+",
+    re.IGNORECASE
+)
+
+
+def _claim_provenance(
+    *,
+    attempted,
+    accepted,
+    fallback_used,
+    fallback_supplemented,
+    model_claim_count=0,
+    deterministic_claim_count=0,
+    unique_model_claim_count=0,
+    failure_reason=None
+):
+    return {
+        "model": MODEL_NAME,
+        "model_attempted": attempted,
+        "model_response_accepted": accepted,
+        "deterministic_fallback_used": fallback_used,
+        "deterministic_supplementation_used": fallback_supplemented,
+        "accepted_model_claim_count": model_claim_count,
+        "deterministic_claim_count": deterministic_claim_count,
+        "unique_model_claim_count": unique_model_claim_count,
+        "failure_reason": failure_reason
+    }
+
+
+def _safe_model_text(value, message_text, fallback):
+    if not isinstance(value, str) or not value.strip():
+        return fallback
+    text = " ".join(value.split()).strip()
+    if _MODEL_UNSAFE_TEXT.search(text):
+        return fallback
+    message_casefold = message_text.casefold()
+    if any(
+        phrase.casefold() not in message_casefold
+        for phrase in _MODEL_NAMED_SOURCE.findall(text)
+    ):
+        return fallback
+    for detail in _MODEL_UNSUPPORTED_DETAIL.findall(text):
+        if detail.casefold() not in message_casefold:
+            return fallback
+    message_numbers = set(re.findall(r"\d[\d,]*(?:\.\d+)?", message_text))
+    if not set(re.findall(r"\d[\d,]*(?:\.\d+)?", text)).issubset(message_numbers):
+        return fallback
+    message_urls = {
+        match.group(0).rstrip(".,!?;:)]}\"'").casefold()
+        for match in _MODEL_URL.finditer(message_text)
+    }
+    for match in _MODEL_URL.finditer(text):
+        url = match.group(0).rstrip(".,!?;:)]}\"'").casefold()
+        if url not in message_urls:
+            return fallback
+    return text
+
+
+def _model_failure_reason(error):
+    if isinstance(error, requests.Timeout):
+        return "timeout"
+    if isinstance(error, requests.HTTPError):
+        return "http_error"
+    if isinstance(error, requests.RequestException):
+        return "connection_error"
+    if isinstance(error, json.JSONDecodeError):
+        return "invalid_json"
+    if isinstance(error, (TypeError, ValueError)):
+        return "invalid_response"
+    return "unknown_error"
 
 
 def get_verification_links(message_text):
@@ -262,7 +382,7 @@ def detect_warning_signals(message_text, language="en"):
                     seen.add(key)
 
     for match in re.finditer(r"https?://[^\s]+|www\.[^\s]+", message_text, re.IGNORECASE):
-        evidence = match.group(0).rstrip(".,!?)]}")
+        evidence = match.group(0).rstrip(".,!?;:)]}\"'")
         if evidence and evidence.casefold() not in seen:
             signals.append({
                 "signal": "Link included",
@@ -276,6 +396,22 @@ def detect_warning_signals(message_text, language="en"):
 
 def _claim_key(claim):
     return re.sub(r"[^\w]+", " ", claim.casefold(), flags=re.UNICODE).strip()
+
+
+def detect_message_language(text):
+    """Classify the message language without treating all Latin text as Hinglish."""
+    if re.search(r"[\u0900-\u097f]", text):
+        return "hi"
+    if not re.search(r"[A-Za-z]", text):
+        return "unknown"
+    hinglish_markers = re.findall(
+        r"\b(?:aap|aur|bahut|bhi|hai|hain|hoga|hogi|honge|hua|hui|hue|"
+        r"ka|ke|ki|ko|mein|milenge|milega|nahi|nahin|se|tha|thi|the|"
+        r"wale|waale)\b",
+        text,
+        re.IGNORECASE
+    )
+    return "hinglish" if len(set(marker.casefold() for marker in hinglish_markers)) >= 2 else "en"
 
 
 def _is_placeholder(value):
@@ -302,9 +438,19 @@ def _is_verification_instruction(value):
     ))
 
 
+def _is_incomplete_claim(value):
+    return bool(re.search(
+        r"(?:\b(?:and|or|but|aur|lekin|और|लेकिन)\s+"
+        r"(?:Dr|Mr|Mrs|Ms|Prof|Sr|Jr|St)\.?|"
+        r"\b(?:Dr|Mr|Mrs|Ms|Prof|Sr|Jr|St)\.)$",
+        value.strip(),
+        re.IGNORECASE
+    ))
+
+
 def _dedupe_claims(claims):
     unique = []
-    keys = []
+    keys = set()
 
     for item in claims:
         if not isinstance(item, dict):
@@ -314,7 +460,12 @@ def _dedupe_claims(claims):
         if not isinstance(claim, str):
             continue
         claim = " ".join(claim.split()).strip()
-        if not claim or _is_placeholder(claim) or _is_verification_instruction(claim):
+        if (
+            not claim
+            or _is_placeholder(claim)
+            or _is_verification_instruction(claim)
+            or _is_incomplete_claim(claim)
+        ):
             continue
 
         key = _claim_key(claim)
@@ -348,9 +499,41 @@ def _dedupe_claims(claims):
             if field in item:
                 normalized_item[field] = item[field]
         unique.append(normalized_item)
-        keys.append(key)
+        keys.add(key)
 
-    return unique
+    filtered = []
+    for item in unique:
+        item_key = _claim_key(item["claim"])
+        duplicate = False
+        for existing in filtered:
+            if (
+                item.get("claim_type") != existing.get("claim_type")
+                and "attributed_quote" in {
+                    item.get("claim_type"),
+                    existing.get("claim_type")
+                }
+            ):
+                continue
+            existing_key = _claim_key(existing["claim"])
+            shorter, longer = sorted(
+                (item_key.split(), existing_key.split()),
+                key=len
+            )
+            shorter_set = set(shorter)
+            longer_set = set(longer)
+            if (
+                len(shorter) >= 4
+                and len(shorter) / max(len(longer), 1) >= 0.6
+                and shorter_set.issubset(longer_set)
+            ):
+                if len(item_key.split()) > len(existing_key.split()):
+                    filtered[filtered.index(existing)] = item
+                duplicate = True
+                break
+        if not duplicate:
+            filtered.append(item)
+
+    return filtered
 
 
 def _fallback_claims(message_text, language="en"):
@@ -430,14 +613,51 @@ def _fallback_claims(message_text, language="en"):
 
 
 def _message_sentences(message_text):
+    protected = message_text
+    protected_period = "\x00"
+    protected = re.sub(
+        r"\b(?:Dr|Mr|Mrs|Ms|Prof|Sr|Jr|St|No|vs|etc|e\.g|i\.e)\.",
+        lambda match: match.group(0).replace(".", protected_period),
+        protected,
+        flags=re.IGNORECASE
+    )
+    protected = re.sub(
+        r"(?<![A-Za-z])([A-Z])\.",
+        lambda match: match.group(0).replace(".", protected_period),
+        protected
+    )
     return [
-        " ".join(sentence.split()).strip()
+        " ".join(sentence.replace(protected_period, ".").split()).strip()
         for sentence in re.split(
             r"(?<=[.!?।])(?:[\"”’']?)(?:\s+)|\n+",
-            message_text
+            protected
         )
         if sentence.strip()
     ]
+
+
+def _message_propositions(sentence):
+    parts = re.split(
+        r"(?<=[,;])\s+(?:(?:and|or|but|aur|lekin|और|लेकिन)\s+)",
+        sentence,
+        flags=re.IGNORECASE
+    )
+    if len(parts) == 1:
+        return [sentence]
+    candidates = []
+    for index, part in enumerate(parts):
+        candidate = part.strip(" ,;")
+        if index:
+            candidate = re.sub(
+                r"^(?:and|or|but|aur|lekin|और|लेकिन)\s+",
+                "",
+                candidate,
+                flags=re.IGNORECASE
+            )
+        claim, _ = _factual_sentence_candidate(candidate)
+        if claim:
+            candidates.append(candidate)
+    return candidates or [sentence]
 
 
 def _claim_language(text):
@@ -445,7 +665,7 @@ def _claim_language(text):
         return "hi"
     if re.search(
         r"\b(?:sabhi|har|milenge|milega|hai|hain|karo|karna|nahi|nahin|"
-        r"mein|ko|ka|ki|ke|hoga|hogi)\b",
+        r"mein|ko|ka|ki|ke|hoga|hogi|hua|hui|hue|tha|thi|the)\b",
         text,
         re.IGNORECASE
     ):
@@ -459,7 +679,7 @@ def _factual_sentence_candidate(sentence):
     value = sentence.strip()
     value = re.sub(
         r"^(?:people are sharing (?:a message )?claiming that|"
-        r"(?:a viral )?message claims? that|the post says that|"
+        r"(?:(?:the |a viral )?message claims? that|the post says that)|"
         r"reports? say that|i think(?: that)?|i believe(?: that)?|"
         r"i feel(?: that)?)\s+",
         "",
@@ -523,7 +743,18 @@ def _factual_sentence_candidate(sentence):
         r"कर सकता है|कर सकती है|कर सकते हैं)",
         plain_text
     ))
-    if not (has_copula_or_modal or has_inflected_verb or has_hindi_predicate):
+    has_hinglish_predicate = bool(re.search(
+        r"\b(?:hua|hui|hue|tha|thi|the|hoga|hogi|honge|"
+        r"lagu\s+hua|kiya\s+tha|kiye\s+the)\b",
+        plain_text,
+        re.IGNORECASE
+    ))
+    if not (
+        has_copula_or_modal
+        or has_inflected_verb
+        or has_hindi_predicate
+        or has_hinglish_predicate
+    ):
         return None, None
 
     claim_type = "question_containing_claim" if question else "factual_assertion"
@@ -592,25 +823,26 @@ def _attributed_claims(sentence, localized):
 def _general_rule_claims(message_text, localized):
     claims = []
     for sentence in _message_sentences(message_text):
-        if not sentence.strip():
-            continue
-        if re.search(r"\b(?:said|stated|announced|claimed|declared|wrote|posted)\b", sentence, re.IGNORECASE):
-            attributed = _attributed_claims(sentence, localized)
-            if attributed:
-                claims.extend(attributed)
+        for proposition in _message_propositions(sentence):
+            if not proposition.strip():
                 continue
+            if re.search(r"\b(?:said|stated|announced|claimed|declared|wrote|posted)\b", proposition, re.IGNORECASE):
+                attributed = _attributed_claims(proposition, localized)
+                if attributed:
+                    claims.extend(attributed)
+                    continue
 
-        claim, claim_type = _factual_sentence_candidate(sentence)
-        if not claim:
-            continue
-        claims.append({
-            "claim": claim,
-            "reason_to_check": localized["specific_claim_reason"],
-            "evidence": sentence,
-            "claim_type": claim_type,
-            "original_language": _claim_language(sentence),
-            "extraction_method": "local_rules"
-        })
+            claim, claim_type = _factual_sentence_candidate(proposition)
+            if not claim:
+                continue
+            claims.append({
+                "claim": claim,
+                "reason_to_check": localized["specific_claim_reason"],
+                "evidence": proposition,
+                "claim_type": claim_type,
+                "original_language": _claim_language(proposition),
+                "extraction_method": "local_rules"
+            })
     return claims
 
 
@@ -851,23 +1083,27 @@ def _rule_based_claims(message_text, language="en"):
         re.IGNORECASE
     )
     for sentence in sentences:
-        if re.search(
-            r"\b(?:said|stated|announced|claimed|declared|wrote|posted)\b",
-            sentence,
-            re.IGNORECASE
-        ):
-            continue
-        if (
-            len(sentence.split()) >= 5
-            and factual_verb.search(sentence)
-            and concrete_detail.search(sentence)
-            and not action_or_pressure.search(sentence)
-        ):
-            claims.append({
-                "claim": sentence,
-                "reason_to_check": localized["specific_claim_reason"],
-                "evidence": sentence
-            })
+        for proposition in _message_propositions(sentence):
+            if re.search(
+                r"\b(?:said|stated|announced|claimed|declared|wrote|posted)\b",
+                proposition,
+                re.IGNORECASE
+            ):
+                continue
+            if (
+                len(proposition.split()) >= 5
+                and factual_verb.search(proposition)
+                and concrete_detail.search(proposition)
+                and not action_or_pressure.search(proposition)
+            ):
+                claim, _ = _factual_sentence_candidate(proposition)
+                if not claim:
+                    continue
+                claims.append({
+                    "claim": claim,
+                    "reason_to_check": localized["specific_claim_reason"],
+                    "evidence": proposition
+                })
 
     claims.extend(_general_rule_claims(message_text, localized))
     return _dedupe_claims(claims)
@@ -1117,7 +1353,15 @@ def fallback_analysis(message_text, language="en"):
         "verification_links": links,
         "disclaimer": localized["disclaimer"],
         "caution_explanation": localized["caution"],
-        "extraction_method": "local_rules"
+        "extraction_method": "local_rules",
+        "gemma_provenance": _claim_provenance(
+            attempted=False,
+            accepted=False,
+            fallback_used=True,
+            fallback_supplemented=False,
+            deterministic_claim_count=len(legacy_claims + rule_claims),
+            failure_reason="not_attempted"
+        )
     }
 
 
@@ -1387,33 +1631,41 @@ def extract_claims(message_text, language="en"):
             "verification_links": [],
             "disclaimer": localized["disclaimer"],
             "caution_explanation": localized["caution"],
-            "extraction_method": "not_run"
+            "extraction_method": "not_run",
+            "gemma_provenance": _claim_provenance(
+                attempted=False,
+                accepted=False,
+                fallback_used=False,
+                fallback_supplemented=False,
+                failure_reason="empty_input"
+            )
         }
 
     fallback = fallback_analysis(message_text, language)
     requested_language = LANGUAGE_NAMES[language]
     prompt = f"""
-Investigate this forwarded message. Preserve its meaning and do not infer misinformation
-from spelling, script, or transliteration. Do not decide truth or falsity. Do not invent
-facts, sources, URLs, or evidence. Ignore URLs as evidence about page content; read all
-surrounding message text, including text after each URL. Copy evidence exactly, including URLs, names, dates,
-phone numbers, OTPs, and amounts. Return concise, practical checks.
-Do not return pure opinions or instructions as checkable claims. If an opinion or
-instruction contains a factual proposition, extract only that proposition.
-Write every explanation, claim, and step in {requested_language}; keep exact evidence
-and proper names unchanged. Return only valid JSON with this shape:
+Extract up to 3 factual claims from this message. Preserve meaning, language,
+transliteration, qualifiers, names, recipients, amounts, dates and locations.
+Use only text present in the message. Never decide truth, invent facts, sources,
+URLs or evidence, or treat URLs as page evidence. Ignore pure opinions and
+instructions without a factual proposition. Copy evidence exactly; keep quotes
+and names unchanged. Write the reason in {requested_language}. Return only compact JSON:
 {{
-  "claims": [{{"claim": "concise claim in normal form", "claim_type": "factual_assertion, attributed_quote, or question_containing_claim", "alleged_speaker": "exact name if stated", "original_language": "en, hi, hinglish, or unknown", "original_wording": "exact quote from the message", "normalized_wording": "searchable wording without added facts", "evidence": "exact supporting text", "context": "exact surrounding sentence", "entities": {{"people": [], "organizations": [], "dates": [], "locations": [], "amounts": []}}, "categories": ["subject area"], "reason_to_check": "why to check"}}],
-  "warning_signals": [{{"signal": "warning sign", "evidence": "exact quote", "explanation": "why to pause"}}],
-  "verification_steps": ["practical independent check"],
-  "caution_explanation": "why the message deserves caution, without treating it as proof",
-  "disclaimer": "claims need independent verification; this analysis does not prove truth or falsity"
+  "claims": [{{"claim":"factual claim","claim_type":"factual_assertion|attributed_quote|question_containing_claim","original_wording":"exact quote","evidence":"exact text","reason_to_check":"brief reason"}}
+  ]
 }}
-Use empty claims or warning_signals only when none are supported. Include 2-4 useful
-verification steps. Keep the answer short. Message:
+Use [] when there are no factual claims. Message:
 {message_text[:3000]}
 """
 
+    effective_timeout = ollama_timeout()
+    request_started = time.perf_counter()
+    logger.warning(
+        "Gemma extraction request started: connect_timeout=%.1fs read_timeout=%.1fs",
+        effective_timeout[0],
+        effective_timeout[1]
+    )
+    response_status = None
     try:
         response = requests.post(
             OLLAMA_URL,
@@ -1424,13 +1676,14 @@ verification steps. Keep the answer short. Message:
                 "format": "json",
                 "options": {
                     "temperature": 0.1,
-                    "num_predict": 700,
-                    "num_ctx": 2048
+                    "num_predict": 256,
+                    "num_ctx": 1536
                 },
                 "keep_alive": "10m"
             },
-            timeout=(3, 12)
+            timeout=effective_timeout
         )
+        response_status = response.status_code
         response.raise_for_status()
         response_data = response.json()
         if not isinstance(response_data, dict):
@@ -1464,24 +1717,38 @@ verification steps. Keep the answer short. Message:
         else:
             raise ValueError("Ollama analysis was not an object or list.")
 
+        analysis.setdefault("warning_signals", [])
+        analysis.setdefault("verification_steps", [])
+        analysis.setdefault("caution_explanation", localized["caution"])
         model_claims = analysis.get("claims", [])
         if (
             not isinstance(model_claims, (list, dict, str))
             or not isinstance(analysis.get("warning_signals"), list)
             or not isinstance(analysis.get("verification_steps"), list)
-            or not isinstance(analysis.get("caution_explanation"), str)
+            or not isinstance(analysis["caution_explanation"], str)
             or not analysis["caution_explanation"].strip()
         ):
             raise ValueError("Ollama analysis is missing required fields.")
 
         claims = _ground_model_claims(model_claims, message_text)
+        accepted_model_claim_count = len(claims)
         if claims:
             claims = _enrich_claim_metadata(
                 claims,
                 message_text,
                 extraction_method="ollama"
             )
-        claims = _dedupe_claims(claims + fallback["claims"])
+        merged_claims = _dedupe_claims(claims + fallback["claims"])
+        deterministic_claim_keys = {
+            _claim_key(item.get("claim", ""))
+            for item in fallback["claims"]
+            if isinstance(item, dict)
+        }
+        unique_model_claim_count = sum(
+            1
+            for item in claims
+            if _claim_key(item.get("claim", "")) not in deterministic_claim_keys
+        )
 
         detected_signals = fallback["warning_signals"]
         model_signals = _normalize_model_signals(
@@ -1493,18 +1760,68 @@ verification steps. Keep the answer short. Message:
             for step in analysis["verification_steps"]
             if isinstance(step, str) and step.strip()
         ][:5]
-        verification_steps = model_steps or fallback["verification_steps"]
+        verification_steps = (
+            model_steps
+            if model_steps
+            else fallback["verification_steps"]
+        )
+        verification_steps = [
+            _safe_model_text(
+                step,
+                message_text,
+                fallback["verification_steps"][index]
+                if index < len(fallback["verification_steps"])
+                else localized["step1"]
+            )
+            for index, step in enumerate(verification_steps)
+        ]
+        verification_steps = [
+            step for step in verification_steps if step
+        ] or fallback["verification_steps"]
+        caution_explanation = _safe_model_text(
+            analysis["caution_explanation"],
+            message_text,
+            fallback["caution_explanation"]
+        )
 
+        logger.warning(
+            "Gemma extraction request completed: status=%s elapsed_seconds=%.2f",
+            response_status,
+            time.perf_counter() - request_started
+        )
         return {
-            "claims": claims,
+            "claims": merged_claims,
             "warning_signals": _merge_signals(model_signals, detected_signals),
             "verification_steps": verification_steps,
             "verification_links": fallback["verification_links"],
             "disclaimer": localized["disclaimer"],
-            "caution_explanation": analysis["caution_explanation"].strip(),
-            "extraction_method": "ollama_assisted"
+            "caution_explanation": caution_explanation,
+            "extraction_method": "ollama_assisted",
+            "gemma_provenance": _claim_provenance(
+                attempted=True,
+                accepted=True,
+                fallback_used=False,
+                fallback_supplemented=bool(fallback["claims"]),
+                model_claim_count=accepted_model_claim_count,
+                deterministic_claim_count=len(fallback["claims"]),
+                unique_model_claim_count=unique_model_claim_count
+            )
         }
 
     except (requests.RequestException, ValueError, TypeError) as error:
-        print("CLAIM ANALYSIS ERROR:", repr(error))
+        failure_reason = _model_failure_reason(error)
+        logger.warning(
+            "Gemma extraction request failed: category=%s status=%s elapsed_seconds=%.2f",
+            failure_reason,
+            response_status,
+            time.perf_counter() - request_started
+        )
+        fallback["gemma_provenance"] = _claim_provenance(
+            attempted=True,
+            accepted=False,
+            fallback_used=True,
+            fallback_supplemented=False,
+            deterministic_claim_count=len(fallback["claims"]),
+            failure_reason=failure_reason
+        )
         return fallback

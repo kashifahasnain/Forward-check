@@ -54,6 +54,13 @@ _QUALIFIER_TERMS = {
     "reportedly", "allegedly", "except", "unless", "however", "although",
     "केवल", "सिर्फ", "कुछ", "पात्र", "हालांकि"
 }
+_GENERIC_CLAIM_TERMS = {
+    "government", "india", "every", "all", "each", "citizen", "citizens",
+    "people", "person", "eligible", "eligibility", "receive", "receives",
+    "received", "giving", "give", "payment", "payments", "amount", "scheme",
+    "benefit", "program", "programme", "announced", "policy", "details",
+    "information", "monthly", "per", "within", "official", "source"
+}
 _SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?।])\s+|\n+")
 _TOKEN_PATTERN = re.compile(
     r"\d+(?:[.,]\d+)*|(?:[^\W_]|[\u0900-\u097f])+",
@@ -633,6 +640,24 @@ def _claim_terms(text):
     return terms
 
 
+def _claim_identity_terms(text_or_terms):
+    terms = (
+        text_or_terms
+        if isinstance(text_or_terms, set)
+        else _claim_terms(text_or_terms)
+    )
+    return {
+        term
+        for term in terms
+        if term not in _GENERIC_CLAIM_TERMS
+    }
+
+
+def _has_sufficient_claim_identity(claim_terms, passage_terms):
+    shared_identity = _claim_identity_terms(claim_terms) & _claim_identity_terms(passage_terms)
+    return len(shared_identity) >= 2
+
+
 def _ascii_digits(text):
     return "".join(
         str(unicodedata.digit(character))
@@ -899,22 +924,29 @@ def assess_claim_against_source(claim, retrieval, language="en"):
             continue
         passage_terms = _claim_terms(passage)
         shared = claim_terms & passage_terms
+        identity_match = _has_sufficient_claim_identity(
+            claim_terms,
+            passage_terms
+        )
         number_terms = {term for term in claim_terms if term.isdigit()}
         text_shared = shared - number_terms
         score = len(shared) / max(1, len(claim_terms))
         if (
-            len(text_shared) >= 2
-            or (len(text_shared) >= 1 and bool(shared & number_terms))
-            or score >= 0.55
+            identity_match
+            and (
+                len(text_shared) >= 2
+                or (len(text_shared) >= 1 and bool(shared & number_terms))
+                or score >= 0.55
+            )
         ):
-            candidates.append((score, len(shared), passage, shared))
+            candidates.append((score, len(shared), passage, shared, identity_match))
 
     if not candidates:
         status = "Does Not Address" if len(text.split()) >= 20 else "Insufficient Information"
         explanation = messages["not_address"] if status == "Does Not Address" else messages["insufficient"]
         return _assessment(status, explanation, [], retrieval, claim_text, language)
 
-    _score, _overlap, passage, shared_terms = max(
+    _score, _overlap, passage, shared_terms, identity_match = max(
         candidates,
         key=lambda item: (item[0], item[1], -len(item[2]))
     )
@@ -935,15 +967,18 @@ def assess_claim_against_source(claim, retrieval, language="en"):
         and passage_numbers
         and claim_numbers.isdisjoint(passage_numbers)
         and len(shared_terms - claim_numbers) >= 2
+        and identity_match
     )
     date_conflict = (
         len(shared_terms - claim_numbers) >= 2
         and _dates_conflict(claim_text, passage)
+        and identity_match
     )
     date_incomplete = _date_coverage_incomplete(claim_text, passage)
     polarity_conflict = (
         _is_negated(claim_text) != _is_negated(passage)
         and len(shared_terms) >= 3
+        and identity_match
     )
     if numerical_conflict or date_conflict or polarity_conflict:
         status = "Contradicts"
@@ -954,7 +989,10 @@ def assess_claim_against_source(claim, retrieval, language="en"):
     elif _claim_terms(passage) & _QUALIFIER_TERMS:
         status = "Contextualizes"
         key = "context"
-    elif len(shared_terms) >= max(2, int(len(claim_terms) * 0.4)):
+    elif (
+        identity_match
+        and len(shared_terms) >= max(2, int(len(claim_terms) * 0.4))
+    ):
         status = "Supports"
         key = "supports"
     else:

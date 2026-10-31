@@ -3,9 +3,13 @@ from PIL import Image, UnidentifiedImageError
 import pytesseract
 import os
 from werkzeug.exceptions import HTTPException
-
+import logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(levelname)s: %(name)s: %(message)s"
+)
 from modules.analysis_pipeline import analyze_message, find_urls
-from modules.claim_extractor import extract_claims
+from modules.claim_extractor import detect_message_language, extract_claims
 
 TESSERACT_PATH = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 MAX_MESSAGE_LENGTH = 10000
@@ -42,6 +46,10 @@ def build_analysis_response(
     source_type="text",
     source_search_enabled=False
 ):
+    if language == "en":
+        detected_language = detect_message_language(message_text)
+        if detected_language == "hinglish":
+            language = detected_language
     result = analyze_message(
         message_text,
         language=language,

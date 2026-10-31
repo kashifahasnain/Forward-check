@@ -99,6 +99,36 @@ class RiskAssessorTests(unittest.TestCase):
         self.assertEqual(result["level"], "Low Caution")
         self.assertEqual(result["score"], 0)
 
+    def test_deadline_cancellation_threat_adds_urgency(self):
+        result = calculate_risk(
+            "Enter your details within 24 hours or your payment will be cancelled."
+        )
+
+        self.assertIn(
+            "urgency",
+            {reason["category"] for reason in result["reasons"]}
+        )
+
+    def test_aadhaar_and_bank_detail_request_is_sensitive_information_warning(self):
+        result = calculate_risk(
+            "Claim your payment and enter your Aadhaar number and bank details."
+        )
+
+        self.assertIn(
+            "credential_request",
+            {reason["category"] for reason in result["reasons"]}
+        )
+
+    def test_harmless_aadhaar_or_bank_mention_is_not_a_request(self):
+        result = calculate_risk(
+            "This educational article explains Aadhaar and bank details."
+        )
+
+        self.assertNotIn(
+            "credential_request",
+            {reason["category"] for reason in result["reasons"]}
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

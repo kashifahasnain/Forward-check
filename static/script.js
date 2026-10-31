@@ -20,14 +20,25 @@ const languageSelect = document.getElementById("language-select");
 const sourceSearchCheckbox = document.getElementById("source-search-enabled");
 const analysisEndpoint = document.currentScript.dataset.analyseUrl;
 const ANALYSIS_TIMEOUT_MS = 60000;
+const heroAction = document.querySelector(".hero-action");
 
 const translations = {
     en: {
         tagline: "Think before you forward.",
+        navHome: "Home",
+        navHowItWorks: "How It Works",
+        navAbout: "About",
+        startChecking: "Start Checking",
+        howHeading: "A careful way to review a forwarded claim.",
+        howCopy: "Paste text or upload a screenshot. Forward Check identifies claims, warning signals, and practical ways to check the message. Optional external search can provide source leads, but snippets are not proof.",
+        aboutHeading: "Evidence helps you investigate. It does not decide truth for you.",
+        aboutCopy: "Results can be incomplete, sources can disagree, and a cautious score is not a truth or fraud probability. URLs are analysed as text and are not automatically opened.",
+        heroTitle: "Think Before You Believe.",
+        pageIntro: "Check claims. Explore evidence. Make informed decisions.",
         pageHeading: "Check a Forwarded Message",
         pageIntro: "Upload a screenshot or paste message text to identify claims, possible warning signals, and ways to verify it.",
         languageLabel: "Report language",
-        sourceSearchOptIn: "Allow sending extracted claims, available speaker/context details, and relevant entities to Brave Search for source leads. Search snippets are not verification.",
+        sourceSearchOptIn: "Only if you opt in, send extracted claims, available speaker/context details, and relevant entities to configured external search providers (Tavily, with optional Brave fallback) for source leads. Search snippets are not verification.",
         pasteHeading: "Paste a message or post",
         messageLabel: "Message text (URLs are analysed as text and are not opened)",
         messagePlaceholder: "Paste the forwarded message or post here...",
@@ -67,7 +78,7 @@ const translations = {
         verdictSufficient: "Evidence sufficient for this limited verdict",
         verdictInsufficient: "Evidence is not sufficient for a verdict",
         verdictDisclosure: "Search snippets are not proof. Retrieved text may be incomplete, sources may disagree, and automated assessments can be wrong. Unverified does not mean false. The caution score is not a truth score.",
-        sourceSearchNotEnabled: "Live source discovery is off; no claims were sent to Brave.",
+        sourceSearchNotEnabled: "Live source discovery is off; no claims were sent to external search providers.",
         sourceSearchNotConfigured: "Live source search is not configured.",
         sourceSearchNoResults: "Search completed; no result leads were returned.",
         sourceSearchFailed: "Live source search could not be completed; check each lead's retrieval status.",
@@ -81,6 +92,7 @@ const translations = {
         extractionMethodLocal: "This claim was extracted with deterministic local rules; it was not fact-checked.",
         extractionFallback: "Ollama was unavailable or its output could not be used, so local fallback extraction ran. Extraction does not verify claims.",
         extractionMethodOllama: "Ollama assisted with claim extraction only; it did not verify these claims.",
+        gemmaContribution: "Gemma assisted with claim extraction. Deterministic local rules supplemented the result where needed. Search, retrieval, evidence assessment and verdicts are separate processes.",
         originalWording: "Original wording:",
         normalizedWording: "Normalized wording:",
         claimTopics: "Topics:",
@@ -93,6 +105,7 @@ const translations = {
         sourceProvider: "Search provider:",
         sourceSummary: "Search-result snippet (not retrieved page text):",
         sourceRelation: "A search result is a lead; only retrieved page text can inform an assessment.",
+        sourceDetails: "Source details",
         sourceLimitations: "Page not retrieved or assessed.",
         sourceRetrievalStatus: "Retrieval status:",
         sourceRetrieved: "Retrieved readable text",
@@ -225,10 +238,19 @@ const translations = {
     },
     hi: {
         tagline: "आगे भेजने से पहले सोचें।",
+        navHome: "होम",
+        navHowItWorks: "कैसे काम करता है",
+        navAbout: "About",
+        startChecking: "जाँच शुरू करें",
+        howHeading: "फॉरवर्ड किए गए दावे की सावधानी से जाँच करें।",
+        howCopy: "पाठ पेस्ट करें या स्क्रीनशॉट अपलोड करें। Forward Check दावों, चेतावनी संकेतों और जाँच के व्यावहारिक तरीकों की पहचान करता है। वैकल्पिक external search source leads दे सकती है, लेकिन snippets प्रमाण नहीं हैं।",
+        aboutHeading: "Evidence जाँच में मदद करता है, लेकिन आपके लिए सत्य तय नहीं करता।",
+        aboutCopy: "नतीजे अधूरे हो सकते हैं और स्रोतों में मतभेद हो सकता है। सावधानी का score सत्य या धोखाधड़ी की probability नहीं है। URLs को text की तरह analyse किया जाता है और वे अपने आप नहीं खोले जाते।",
+        heroTitle: "विश्वास करने से पहले सोचें।",
         pageHeading: "फॉरवर्ड संदेश की जाँच करें",
         pageIntro: "दावों और चेतावनी संकेतों की पहचान करने तथा जाँच के तरीके जानने के लिए स्क्रीनशॉट अपलोड करें या संदेश पेस्ट करें।",
         languageLabel: "रिपोर्ट की भाषा",
-        sourceSearchOptIn: "स्रोत खोज के लिए निकाले गए दावे, उपलब्ध वक्ता/संदर्भ जानकारी और संबंधित जानकारी Brave Search को भेजें। खोज के अंश पुष्टि नहीं हैं।",
+        sourceSearchOptIn: "केवल आपकी अनुमति पर निकाले गए दावे, उपलब्ध वक्ता/संदर्भ जानकारी और संबंधित जानकारी configured external search providers (Tavily, optional Brave fallback) को source leads के लिए भेजी जाएगी। खोज के अंश पुष्टि नहीं हैं।",
         pasteHeading: "संदेश या पोस्ट पेस्ट करें",
         messageLabel: "संदेश का पाठ (लिंक केवल पाठ के रूप में जाँचे जाते हैं, खोले नहीं जाते)",
         messagePlaceholder: "फॉरवर्ड संदेश या पोस्ट यहाँ पेस्ट करें...",
@@ -268,7 +290,7 @@ const translations = {
         verdictSufficient: "इस सीमित निष्कर्ष के लिए प्रमाण पर्याप्त है",
         verdictInsufficient: "निष्कर्ष के लिए प्रमाण पर्याप्त नहीं है",
         verdictDisclosure: "खोज के अंश स्वयं प्रमाण नहीं हैं। प्राप्त पाठ अधूरा हो सकता है, स्रोत असहमत हो सकते हैं और स्वचालित आकलन गलत हो सकते हैं। अपुष्ट का अर्थ गलत नहीं है। सावधानी अंक सत्यता का अंक नहीं है।",
-        sourceSearchNotEnabled: "लाइव स्रोत खोज बंद है; कोई दावा Brave को नहीं भेजा गया।",
+        sourceSearchNotEnabled: "लाइव स्रोत खोज बंद है; कोई दावा external search providers को नहीं भेजा गया।",
         sourceSearchNotConfigured: "लाइव स्रोत खोज सेट नहीं है।",
         sourceSearchNoResults: "खोज पूरी हुई; कोई परिणाम नहीं मिला।",
         sourceSearchFailed: "लाइव स्रोत खोज पूरी नहीं हो सकी; हर स्रोत की प्राप्ति स्थिति देखें।",
@@ -282,6 +304,7 @@ const translations = {
         extractionMethodLocal: "यह दावा स्थानीय नियमों से निकाला गया; इसकी तथ्य-जाँच नहीं हुई।",
         extractionFallback: "Ollama उपलब्ध नहीं था या उसका उत्तर उपयोग नहीं हो सका, इसलिए स्थानीय fallback extraction चला। दावा निकालना सत्यापन नहीं है।",
         extractionMethodOllama: "Ollama ने केवल दावा निकालने में मदद की; उसने दावों का सत्यापन नहीं किया।",
+        gemmaContribution: "Gemma ने दावा निकालने में मदद की। जहाँ ज़रूरत थी, स्थानीय deterministic rules ने परिणाम को पूरा किया। Search, retrieval, evidence assessment और verdict अलग प्रक्रियाएँ हैं।",
         originalWording: "मूल शब्द:",
         normalizedWording: "सामान्य रूप:",
         claimTopics: "विषय:",
@@ -294,6 +317,7 @@ const translations = {
         sourceProvider: "खोज provider:",
         sourceSummary: "खोज परिणाम का अंश (प्राप्त पेज का पाठ नहीं):",
         sourceRelation: "खोज परिणाम केवल स्रोत-संकेत है; आकलन केवल प्राप्त पेज के पाठ से हो सकता है।",
+        sourceDetails: "स्रोत की जानकारी",
         sourceLimitations: "पेज प्राप्त या जाँचा नहीं गया।",
         sourceRetrievalStatus: "पेज प्राप्ति की स्थिति:",
         sourceRetrieved: "पढ़ने योग्य पाठ प्राप्त हुआ",
@@ -426,10 +450,19 @@ const translations = {
     },
     hinglish: {
         tagline: "Aage bhejne se pehle sochein.",
+        navHome: "Home",
+        navHowItWorks: "Kaise Kaam Karta Hai",
+        navAbout: "About",
+        startChecking: "Checking Shuru Karein",
+        howHeading: "Forwarded claim ko carefully review karne ka tareeqa.",
+        howCopy: "Text paste karein ya screenshot upload karein. Forward Check claims, warning signals aur check karne ke practical tareeqe identify karta hai. Optional external search source leads de sakti hai, lekin snippets proof nahi hain.",
+        aboutHeading: "Evidence investigation mein help karta hai; truth aapke liye decide nahi karta.",
+        aboutCopy: "Results incomplete ho sakte hain aur sources disagree kar sakte hain. Caution score truth ya fraud probability nahi hai. URLs ko text ki tarah analyse kiya jata hai aur automatically open nahi kiya jata.",
+        heroTitle: "Maanne Se Pehle Sochein.",
         pageHeading: "Forwarded Message Check Karein",
         pageIntro: "Claims aur warning signals pehchanne aur verify karne ke tareeqe jaanne ke liye screenshot upload karein ya message paste karein.",
         languageLabel: "Report ki language",
-        sourceSearchOptIn: "Source leads ke liye extracted claims, available speaker/context details aur relevant entities Brave Search ko bhejein. Search snippets verification nahi hain.",
+        sourceSearchOptIn: "Sirf aapki permission par extracted claims, available speaker/context details aur relevant entities configured external search providers (Tavily, optional Brave fallback) ko source leads ke liye bheje jayenge. Search snippets verification nahi hain.",
         pasteHeading: "Message ya post paste karein",
         messageLabel: "Message text (URLs ko text ki tarah analyse kiya jata hai, khola nahi jata)",
         messagePlaceholder: "Forwarded message ya post yahan paste karein...",
@@ -469,7 +502,7 @@ const translations = {
         verdictSufficient: "Is limited verdict ke liye evidence sufficient hai",
         verdictInsufficient: "Verdict ke liye evidence sufficient nahi hai",
         verdictDisclosure: "Search snippets proof nahi hain. Retrieved text incomplete ho sakta hai, sources disagree kar sakte hain, aur automated assessment galat ho sakta hai. Unverified ka matlab false nahi. Caution score truth score nahi hai.",
-        sourceSearchNotEnabled: "Live source discovery off hai; koi claim Brave ko nahi bheja gaya.",
+        sourceSearchNotEnabled: "Live source discovery off hai; koi claim external search providers ko nahi bheja gaya.",
         sourceSearchNotConfigured: "Live source search configure nahi hai.",
         sourceSearchNoResults: "Search complete hui; koi result lead nahi mili.",
         sourceSearchFailed: "Live source search complete nahi hui; har lead ka retrieval status check karein.",
@@ -483,6 +516,7 @@ const translations = {
         extractionMethodLocal: "Yeh claim deterministic local rules se nikala gaya; iski fact-checking nahi hui.",
         extractionFallback: "Ollama available nahi tha ya uska output use nahi ho saka, isliye local fallback extraction chala. Extraction claim verify nahi karta.",
         extractionMethodOllama: "Ollama ne sirf claims extract karne mein madad ki; usne claims verify nahi kiye.",
+        gemmaContribution: "Gemma ne claims extract karne mein madad ki. Zaroorat par local deterministic rules ne result ko supplement kiya. Search, retrieval, evidence assessment aur verdict alag processes hain.",
         originalWording: "Original wording:",
         normalizedWording: "Normalized wording:",
         claimTopics: "Topics:",
@@ -495,6 +529,7 @@ const translations = {
         sourceProvider: "Search provider:",
         sourceSummary: "Search-result snippet (retrieved page text nahi):",
         sourceRelation: "Search result ek lead hai; assessment sirf retrieved page text se hota hai.",
+        sourceDetails: "Source details",
         sourceLimitations: "Page retrieve ya assess nahi hua.",
         sourceRetrievalStatus: "Page retrieval status:",
         sourceRetrieved: "Readable text retrieve hua",
@@ -689,10 +724,50 @@ function localizeSignalName(name) {
         "Urgency": { hi: "जल्दी करने का दबाव", hinglish: "Jaldi karne ka pressure" },
         "Forwarding request": { hi: "आगे भेजने का अनुरोध", hinglish: "Aage forward karne ki request" },
         "Promotional or emotional wording": { hi: "प्रचार या भावनात्मक भाषा", hinglish: "Promotional ya emotional wording" },
-        "Link included": { hi: "लिंक शामिल है", hinglish: "Link shamil hai" }
+        "Link included": { hi: "लिंक शामिल है", hinglish: "Link shamil hai" },
+        "credential_request": {
+            en: "Sensitive information request",
+            hi: "संवेदनशील जानकारी माँगना",
+            hinglish: "Sensitive information maangna"
+        },
+        "urgency": {
+            en: "Urgency",
+            hi: "जल्दी करने का दबाव",
+            hinglish: "Jaldi karne ka pressure"
+        },
+        "authority_word_in_hostname": {
+            en: "Government-looking web address",
+            hi: "सरकारी जैसा दिखने वाला web address",
+            hinglish: "Government jaisa dikhne wala web address"
+        },
+        "suspicious_url_structure": {
+            en: "Unusual web address structure",
+            hi: "असामान्य web address structure",
+            hinglish: "Unusual web address structure"
+        },
+        "unencrypted_http": {
+            en: "HTTP web address",
+            hi: "HTTP web address",
+            hinglish: "HTTP web address"
+        },
+        "lookalike_brand_term": {
+            en: "Lookalike brand wording",
+            hi: "मिलते-जुलते brand का wording",
+            hinglish: "Lookalike brand wording"
+        },
+        "mass_forwarding": {
+            en: "Broad forwarding request",
+            hi: "बहुत लोगों को forward करने का अनुरोध",
+            hinglish: "Bahut logon ko forward karne ki request"
+        },
+        "unattributed_benefit": {
+            en: "Unattributed benefit",
+            hi: "बिना स्पष्ट स्रोत का लाभ",
+            hinglish: "Clear source ke bina benefit"
+        }
     };
-    return labels[name] && labels[name][currentLanguage]
-        ? labels[name][currentLanguage]
+    return labels[name] && (labels[name][currentLanguage] || labels[name].en)
+        ? labels[name][currentLanguage] || labels[name].en
         : name;
 }
 
@@ -720,6 +795,12 @@ let languageChangePending = false;
 let lastSourceType = "text";
 const correctedTextButton = document.getElementById("analyse-corrected-button");
 const correctedTextButtonLabel = correctedTextButton.querySelector("span");
+
+if (heroAction) {
+    heroAction.addEventListener("click", () => {
+        window.setTimeout(() => messageInput.focus(), 0);
+    });
+}
 
 function addTextElement(parent, tag, text, className = "") {
     const element = document.createElement(tag);
@@ -895,11 +976,10 @@ function renderClaims(claimsBox, claims, extractionMethod) {
     );
 
     if (uniqueClaims.length === 0) {
-        if (extractionMethod === "local_rules") {
-            addTextElement(claimsBox, "p", t("extractionFallback"));
-        } else if (extractionMethod === "ollama_assisted") {
+        if (extractionMethod === "ollama_assisted") {
             addTextElement(claimsBox, "p", t("extractionMethodOllama"));
         }
+
         addTextElement(claimsBox, "p", t("noClaims"));
         return;
     }
@@ -1008,33 +1088,38 @@ function renderClaims(claimsBox, claims, extractionMethod) {
                 sourceLink.rel = "noopener noreferrer";
                 sourceLink.textContent = source.title;
                 sourceCard.appendChild(sourceLink);
+                const sourceDetails = document.createElement("details");
+                sourceDetails.className = "source-details";
+                const sourceDetailsSummary = document.createElement("summary");
+                sourceDetailsSummary.textContent = t("sourceDetails");
+                sourceDetails.appendChild(sourceDetailsSummary);
                 if (
                     typeof source.retrieved_title === "string"
                     && source.retrieved_title.trim()
                     && source.retrieved_title.trim() !== source.title.trim()
                 ) {
                     addTextElement(
-                        sourceCard,
+                        sourceDetails,
                         "p",
                         `${t("sourcePageTitle")} ${source.retrieved_title}`
                     );
                 }
                 if (typeof source.publisher === "string" && source.publisher.trim()) {
-                    addTextElement(sourceCard, "p", source.publisher);
+                    addTextElement(sourceDetails, "p", source.publisher);
                 }
                 if (typeof source.date === "string" && source.date.trim()) {
-                    addTextElement(sourceCard, "p", t("sourceDate", source.date));
+                    addTextElement(sourceDetails, "p", t("sourceDate", source.date));
                 } else if (source.date_status === "not_provided") {
-                    addTextElement(sourceCard, "p", t("sourceDateNotProvided"));
+                    addTextElement(sourceDetails, "p", t("sourceDateNotProvided"));
                 } else if (source.date_status === "unrecognized") {
-                    addTextElement(sourceCard, "p", t("sourceDateUnrecognized"));
+                    addTextElement(sourceDetails, "p", t("sourceDateUnrecognized"));
                 }
                 if (
                     typeof source.retrieved_publication_date === "string"
                     && source.retrieved_publication_date.trim()
                 ) {
                     addTextElement(
-                        sourceCard,
+                        sourceDetails,
                         "p",
                         t("sourcePageDate", source.retrieved_publication_date)
                     );
@@ -1044,24 +1129,27 @@ function renderClaims(claimsBox, claims, extractionMethod) {
                     && source.retrieved_source_type.trim()
                 ) {
                     addTextElement(
-                        sourceCard,
+                        sourceDetails,
                         "p",
                         `${t("sourceType")} ${source.retrieved_source_type}`
                     );
                 }
                 if (typeof source.query === "string" && source.query.trim()) {
                     addTextElement(
-                        sourceCard,
+                        sourceDetails,
                         "p",
                         `${t("sourceQuery")} ${source.query}`
                     );
                 }
                 if (typeof source.summary === "string" && source.summary.trim()) {
                     addTextElement(
-                        sourceCard,
+                        sourceDetails,
                         "p",
                         `${t("sourceSummary")} ${source.summary}`
                     );
+                }
+                if (sourceDetails.childElementCount > 1) {
+                    sourceCard.appendChild(sourceDetails);
                 }
                 addTextElement(sourceCard, "p", t("sourceRelation"));
                 if (
@@ -1111,6 +1199,17 @@ function renderClaims(claimsBox, claims, extractionMethod) {
 
         claimsBox.appendChild(card);
     });
+}
+
+function renderGemmaContribution(claimsBox, provenance) {
+    if (!provenance || typeof provenance !== "object") {
+        return;
+    }
+    if (provenance.model_response_accepted) {
+        addTextElement(claimsBox, "p", t("gemmaContribution"));
+    } else if (provenance.deterministic_fallback_used) {
+        addTextElement(claimsBox, "p", t("extractionFallback"));
+    }
 }
 
 function renderSignals(signalsBox, signals) {
@@ -1572,6 +1671,17 @@ function createShareReport(analysis, metadata = {}) {
     if (typeof metadata.analysis_scope === "string" && metadata.analysis_scope.trim()) {
         lines.push("", t("scopeHeading"), metadata.analysis_scope.trim());
     }
+    const provenance = analysis.gemma_provenance;
+    if (provenance && typeof provenance === "object") {
+        lines.push(
+            "",
+            provenance.model_response_accepted
+                ? t("gemmaContribution")
+                : provenance.deterministic_fallback_used
+                    ? t("extractionFallback")
+                    : ""
+        );
+    }
 
     const urlAnalyses = Array.isArray(metadata.url_analysis)
         ? metadata.url_analysis
@@ -1984,6 +2094,8 @@ async function submitAnalysis(formData, progressMessage) {
     uploadButton.disabled = true;
     textButton.disabled = true;
     statusText.textContent = progressMessage;
+    statusText.classList.add("loading");
+    statusText.setAttribute("aria-busy", "true");
     stopCurrentSpeech();
     currentSpeechText = "";
     readReportButton.disabled = true;
@@ -2077,6 +2189,7 @@ async function submitAnalysis(formData, progressMessage) {
         linksBox.replaceChildren();
 
         renderClaims(claimsBox, analysis.claims, analysis.extraction_method);
+        renderGemmaContribution(claimsBox, analysis.gemma_provenance);
         evidenceStatusElement.textContent =
             analysis.evidence_status && typeof analysis.evidence_status.message === "string"
                 ? analysis.evidence_status.message
@@ -2117,6 +2230,8 @@ async function submitAnalysis(formData, progressMessage) {
         }
     } finally {
         window.clearTimeout(timeoutId);
+        statusText.classList.remove("loading");
+        statusText.removeAttribute("aria-busy");
         uploadButton.disabled = false;
         textButton.disabled = false;
         if (languageChangePending) {
