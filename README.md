@@ -45,6 +45,25 @@ back to Ollama without labeling the result as Gemma 4. Set `ollama` to use the
 existing local provider explicitly. `GEMINI_API_KEY` is read only by Flask and
 is never sent to the browser or included in reports.
 
+## Telegram bot (Phase 1)
+
+The Telegram adapter is independent of Flask and uses long polling. Install the
+requirements, create a bot with BotFather, and set both credentials in the same
+Windows CMD terminal. The token and API key are read only by the backend.
+
+```cmd
+set "TELEGRAM_BOT_TOKEN=your-telegram-bot-token"
+set "GEMINI_API_KEY=your-gemini-api-key"
+.\.venv\Scripts\python.exe telegram_bot.py
+```
+
+Send `/start`, `/help`, a text claim, or a screenshot. Telegram analysis reuses
+the existing claim and OCR pipelines. Live source search is not enabled by
+default in the bot, so evidence remains **Unverified** unless that integration
+is explicitly extended later. Ollama fallback results identify `gemma3:4b`;
+they are never labeled as Gemma 4. Do not paste credentials into messages or
+commit them to the repository.
+
 For a local Ollama run that needs more time to load or generate with Gemma,
 the connection timeout remains short while the read timeout can be increased.
 The defaults are 3 seconds for connection and 90 seconds for reading. Values

@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "Forward Check",
+  "version": "1.0.0",
+  "description": "Check claims with Forward Check and Gemma.",
+  "permissions": [
+    "contextMenus",
+    "storage"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1:5000/*",
+    "http://localhost:5000/*"
+  ],
+  "action": {
+    "default_title": "Forward Check",
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  }
+}

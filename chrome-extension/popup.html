@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Forward Check</title>
+    <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+    <main class="app-shell">
+        <header class="brand-row">
+            <div class="brand-mark" aria-hidden="true">FC</div>
+            <div>
+                <h1>Forward Check</h1>
+                <p>Think before you forward.</p>
+            </div>
+            <span class="status-dot" title="Local Flask connection"></span>
+        </header>
+
+        <section class="intro">
+            <span class="eyebrow">AI FACT-CHECKING</span>
+            <h2>Check what you see.</h2>
+            <p>Paste a claim or confirm selected text from any webpage.</p>
+        </section>
+
+        <section class="card input-card">
+            <div id="selection-note" class="selection-note" hidden>
+                <strong>Selected text ready</strong>
+                <span>Review it below before analyzing.</span>
+            </div>
+            <label for="claim-text">Claim or message</label>
+            <textarea id="claim-text" maxlength="10000" rows="6"
+                placeholder="Paste a forwarded claim here..."></textarea>
+            <div class="input-row">
+                <label class="select-label" for="language">
+                    <span>Language</span>
+                    <select id="language">
+                        <option value="en">English</option>
+                        <option value="hi">हिंदी</option>
+                        <option value="hinglish">Hinglish</option>
+                    </select>
+                </label>
+                <label class="toggle-label">
+                    <input id="source-search" type="checkbox">
+                    <span>Search sources</span>
+                </label>
+            </div>
+            <div class="button-row">
+                <button id="analyze" class="primary" type="button">✦ Analyze claim</button>
+                <label class="upload-button" for="screenshot">↥ Screenshot</label>
+                <input id="screenshot" type="file" accept="image/png,image/jpeg,image/webp">
+            </div>
+            <p class="hint">Source search is optional. Search leads are not proof.</p>
+        </section>
+
+        <section id="progress" class="card progress-card" hidden aria-live="polite">
+            <span class="spinner" aria-hidden="true"></span>
+            <div><strong id="progress-title">Analyzing with Forward Check</strong><p id="progress-detail">Reading claim</p></div>
+        </section>
+
+        <section id="error" class="error-card" hidden role="alert">
+            <strong>Something went wrong</strong>
+            <p id="error-message"></p>
+            <button id="retry" type="button">Try again</button>
+        </section>
+
+        <section id="results" hidden>
+            <div class="result-heading">
+                <div><span class="eyebrow">REPORT</span><h2>Your claim review</h2></div>
+                <button id="copy" class="icon-button" type="button">Copy</button>
+            </div>
+            <div id="report" class="report-stack"></div>
+            <button id="new-check" class="secondary" type="button">← Check another claim</button>
+        </section>
+
+        <footer>AI assessment and evidence verification are separate.</footer>
+    </main>
+    <script src="popup.js"></script>
+</body>
+</html>

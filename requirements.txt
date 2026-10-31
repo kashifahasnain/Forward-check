@@ -4,3 +4,4 @@ pytesseract
 opencv-python
 requests
 google-genai
+python-telegram-bot>=21,<22

@@ -8,6 +8,8 @@
 </head>
 
 <body>
+    <div class="ambient ambient-one" aria-hidden="true"></div>
+    <div class="ambient ambient-two" aria-hidden="true"></div>
     <header>
         <div class="site-header">
             <a class="brand" href="/" aria-label="Forward Check home">
@@ -23,18 +25,41 @@
                 <a href="#about" data-i18n="navAbout">About</a>
             </nav>
             <div class="header-rule" aria-hidden="true"></div>
-            <p class="header-note">Evidence-led message review</p>
+            <p class="header-note"><span class="online-dot" aria-hidden="true"></span> Evidence-led message review</p>
         </div>
     </header>
 
     <main>
         <section class="hero" aria-labelledby="hero-heading">
-            <p class="eyebrow">MESSAGE VERIFICATION</p>
+            <p class="eyebrow"><span class="eyebrow-dot" aria-hidden="true"></span> MESSAGE VERIFICATION</p>
             <h1 id="hero-heading" data-i18n="heroTitle">Verify What You See</h1>
             <p class="hero-copy" data-i18n="pageIntro">
                 Check claims. Explore evidence. Make informed decisions.
             </p>
-            <a class="hero-action" href="#checking-section" data-i18n="startChecking">Start Checking</a>
+            <a class="hero-action" href="#checking-section" data-i18n="startChecking">Start Checking <span aria-hidden="true">→</span></a>
+            <div class="hero-trust">
+                <span>✦ Gemma-powered analysis</span>
+                <span>⌁ Evidence stays separate</span>
+            </div>
+        </section>
+
+        <section class="session-stats" aria-label="Session statistics">
+            <div class="stat-card">
+                <span class="stat-icon">◎</span>
+                <span class="stat-value" id="stat-claims">0</span>
+                <span class="stat-label">Claims analysed</span>
+            </div>
+            <div class="stat-card">
+                <span class="stat-icon">▣</span>
+                <span class="stat-value" id="stat-screenshots">0</span>
+                <span class="stat-label">Screenshots processed</span>
+            </div>
+            <div class="stat-card">
+                <span class="stat-icon">文</span>
+                <span class="stat-value" id="stat-languages">0</span>
+                <span class="stat-label">Languages used</span>
+            </div>
+            <p class="stats-note">This session only</p>
         </section>
 
         <section class="info-strip" id="how-it-works" aria-labelledby="how-heading">
@@ -88,7 +113,13 @@
                         placeholder="Paste the forwarded message or post here..."
                         data-i18n-placeholder="messagePlaceholder"
                     ></textarea>
-                    <button type="submit" id="analyse-text-button">
+                    <div class="sample-claims" aria-label="Sample claims">
+                        <span class="sample-label">Try a sample</span>
+                        <button type="button" class="sample-claim" data-sample-claim="We could catch a cold by eating ice cream.">Eating ice cream causes colds</button>
+                        <button type="button" class="sample-claim" data-sample-claim="The Constitution of India came into effect on 26 January 1950.">A history claim</button>
+                    </div>
+                    <button type="submit" id="analyse-text-button" class="primary-button">
+                        <span class="button-spark" aria-hidden="true">✦</span>
                         <span data-i18n="analyseMessage">Analyse Message</span>
                     </button>
                 </form>
@@ -98,7 +129,13 @@
                 <h3 id="screenshot-heading" data-i18n="uploadHeading">Or upload a screenshot</h3>
                 <p class="input-hint">Use a clear image when the original text cannot be copied.</p>
                 <form id="upload-form">
-                    <label for="screenshot" data-i18n="uploadLabel">Upload screenshot</label>
+                    <label class="dropzone" for="screenshot">
+                        <span class="dropzone-icon" aria-hidden="true">↥</span>
+                        <span class="dropzone-title" data-i18n="uploadLabel">Upload screenshot</span>
+                        <span class="dropzone-copy">Drop an image here or browse your device</span>
+                        <span class="dropzone-types">PNG · JPG · WEBP · max 8 MB</span>
+                        <span id="image-preview" class="image-preview" hidden></span>
+                    </label>
                     <input
                         type="file"
                         id="screenshot"
@@ -111,6 +148,22 @@
                 </form>
             </section>
 
+            <section id="progress-panel" class="progress-panel" hidden aria-live="polite" aria-busy="true">
+                <div class="progress-header">
+                    <span class="progress-orb" aria-hidden="true"></span>
+                    <div>
+                        <strong>Working through your claim</strong>
+                        <p id="progress-detail">Reading claim</p>
+                    </div>
+                </div>
+                <ol class="progress-steps" id="progress-steps">
+                    <li data-progress-step="reading" class="active"><span>1</span> Reading claim</li>
+                    <li data-progress-step="extracting"><span>2</span> Extracting text</li>
+                    <li data-progress-step="analysing"><span>3</span> Analyzing with Gemma 4</li>
+                    <li data-progress-step="sources"><span>4</span> Checking sources</li>
+                    <li data-progress-step="report"><span>5</span> Preparing report</li>
+                </ol>
+            </section>
             <p id="status" role="status"></p>
 
                 <section id="results" hidden aria-labelledby="results-heading">
@@ -120,6 +173,31 @@
                             <h2 id="results-heading">Analysis results</h2>
                         </div>
                         <span class="step-label">02</span>
+                    </div>
+                    <div class="result-summary-bar">
+                        <span class="summary-pulse" aria-hidden="true"></span>
+                        <span>Analysis complete · AI and evidence are shown separately</span>
+                    </div>
+                    <div class="verification-flow" aria-label="Verification flow">
+                        <button type="button" class="flow-stage active" data-flow-target="flow-claim">
+                            <span class="flow-number">1</span><strong>Claim</strong><small>What was said</small>
+                        </button>
+                        <span class="flow-arrow" aria-hidden="true">→</span>
+                        <button type="button" class="flow-stage" data-flow-target="flow-ai">
+                            <span class="flow-number">2</span><strong>AI analysis</strong><small>Gemma reasoning</small>
+                        </button>
+                        <span class="flow-arrow" aria-hidden="true">→</span>
+                        <button type="button" class="flow-stage" data-flow-target="flow-evidence">
+                            <span class="flow-number">3</span><strong>Evidence check</strong><small>Source review</small>
+                        </button>
+                        <span class="flow-arrow" aria-hidden="true">→</span>
+                        <button type="button" class="flow-stage" data-flow-target="flow-report">
+                            <span class="flow-number">4</span><strong>Report</strong><small>Clear next steps</small>
+                        </button>
+                    </div>
+                    <div class="flow-explanation" id="flow-explanation">
+                        <strong id="flow-claim">Claim</strong>
+                        <span>We preserve the message's wording so you can see exactly what was analysed.</span>
                     </div>
                     <h2 data-i18n="extractedHeading">Extracted Message</h2>
                 <label for="extracted-text" data-i18n="extractedEditHint">Extracted text (edit OCR mistakes, then analyse again)</label>
@@ -151,9 +229,17 @@
                     <ul id="risk-reasons"></ul>
                 </section>
 
-                <h2 data-i18n="claimsHeading">Claims to Check</h2>
+                <div class="section-title-row">
+                    <h2 data-i18n="claimsHeading">Claims to Check</h2>
+                    <span class="section-kicker">AI + evidence</span>
+                </div>
                 <p id="evidence-status" role="status" aria-live="polite"></p>
                 <div id="claims"></div>
+
+                <details class="info-panel">
+                    <summary>What does “Unverified” mean?</summary>
+                    <p>Unverified means Forward Check did not have enough independently retrieved evidence for a verdict. It does not mean the claim is false. Gemma's assessment is an AI opinion, not source verification.</p>
+                </details>
 
                 <h2 data-i18n="signalsHeading">Warning Signals</h2>
                 <div id="signals"></div>

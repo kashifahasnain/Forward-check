@@ -2,6 +2,7 @@ from flask import Flask, render_template, request, jsonify
 from PIL import Image, UnidentifiedImageError
 import pytesseract
 import os
+from io import BytesIO
 from werkzeug.exceptions import HTTPException
 import logging
 logging.basicConfig(
@@ -25,6 +26,16 @@ HINDI_OCR_MISSING = {
     "hi": "हिंदी स्क्रीनशॉट पढ़ने के लिए Tesseract का हिंदी डेटा (hin.traineddata) इंस्टॉल करें या पाठ यहाँ पेस्ट करें।",
     "hinglish": "Hindi screenshot text padhne ke liye Tesseract ka Hindi data (hin.traineddata) install karein ya text paste karein."
 }
+
+
+@app.after_request
+def allow_chrome_extension_requests(response):
+    """Allow the unpacked extension to call Flask without opening the API broadly."""
+    origin = request.headers.get("Origin", "")
+    if origin.startswith("chrome-extension://"):
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Vary"] = "Origin"
+    return response
 
 if os.path.exists(TESSERACT_PATH):
     pytesseract.pytesseract.tesseract_cmd = TESSERACT_PATH
@@ -86,6 +97,37 @@ def build_analysis_response(
         raise RuntimeError("Analysis pipeline returned an incomplete response.")
 
     return jsonify({"language": language, **result})
+
+
+def extract_image_text(image_bytes, language="en"):
+    """Decode a Telegram or web image and run the existing OCR pipeline."""
+    if not isinstance(image_bytes, (bytes, bytearray)):
+        raise ValueError("Image data is invalid.")
+    if len(image_bytes) > MAX_UPLOAD_SIZE:
+        raise ValueError(
+            f"Upload is too large. Keep the image under "
+            f"{MAX_UPLOAD_SIZE // (1024 * 1024)} MB."
+        )
+
+    image = Image.open(BytesIO(image_bytes))
+    if image.format not in ALLOWED_IMAGE_FORMATS:
+        raise ValueError("Unsupported image type.")
+    if image.width * image.height > MAX_IMAGE_PIXELS:
+        raise ValueError("The image dimensions are too large.")
+    image.load()
+
+    ocr_language = "eng"
+    has_hindi_ocr = True
+    if language in {"hi", "auto"}:
+        has_hindi_ocr = "hin" in pytesseract.get_languages(config="")
+        if has_hindi_ocr:
+            ocr_language = "eng+hin"
+    extracted_text = pytesseract.image_to_string(image, lang=ocr_language)
+    if not extracted_text.strip():
+        if language == "hi" and not has_hindi_ocr:
+            raise ValueError(HINDI_OCR_MISSING[language])
+        raise ValueError("No readable text found. Try a clearer screenshot.")
+    return extracted_text
 
 
 @app.errorhandler(413)
@@ -167,38 +209,10 @@ def analyse():
                 "error": "The uploaded file type does not match its filename."
             }), 400
 
-        image = Image.open(uploaded_file.stream)
-        if image.format not in ALLOWED_IMAGE_FORMATS:
-            return jsonify({
-                "error": "Unsupported image type. Upload a PNG, JPG, JPEG, or WEBP image."
-            }), 400
-        if image.width * image.height > MAX_IMAGE_PIXELS:
-            return jsonify({
-                "error": "The image dimensions are too large. Upload a smaller image."
-            }), 413
-        image.load()
-
-        ocr_language = "eng"
-        has_hindi_ocr = True
-        contains_devanagari = any(
-            "\u0900" <= character <= "\u097f"
-            for character in message_text or ""
+        extracted_text = extract_image_text(
+            uploaded_file.stream.read(),
+            language=language
         )
-        if language == "hi" or contains_devanagari:
-            has_hindi_ocr = "hin" in pytesseract.get_languages(config="")
-            if has_hindi_ocr:
-                ocr_language = "eng+hin"
-
-        extracted_text = pytesseract.image_to_string(
-            image, lang=ocr_language
-        )
-
-        if not extracted_text.strip():
-            if language == "hi" and not has_hindi_ocr:
-                return jsonify({"error": HINDI_OCR_MISSING[language]}), 400
-            return jsonify({
-                "error": "No readable text found. Try a clearer screenshot."
-            }), 400
 
         return build_analysis_response(
             extracted_text,
@@ -216,6 +230,10 @@ def analyse():
         return jsonify({
             "error": "OCR failed. Check Tesseract installation and try again."
         }), 500
+
+    except ValueError as error:
+        status_code = 413 if "too large" in str(error).casefold() else 400
+        return jsonify({"error": str(error)}), status_code
 
     except (UnidentifiedImageError, Image.DecompressionBombError, OSError):
         return jsonify({

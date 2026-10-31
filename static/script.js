@@ -21,6 +21,22 @@ const sourceSearchCheckbox = document.getElementById("source-search-enabled");
 const analysisEndpoint = document.currentScript.dataset.analyseUrl;
 const ANALYSIS_TIMEOUT_MS = 60000;
 const heroAction = document.querySelector(".hero-action");
+const progressPanel = document.getElementById("progress-panel");
+const progressDetail = document.getElementById("progress-detail");
+const progressSteps = document.querySelectorAll("[data-progress-step]");
+const imagePreview = document.getElementById("image-preview");
+const dropzone = document.querySelector(".dropzone");
+const statClaims = document.getElementById("stat-claims");
+const statScreenshots = document.getElementById("stat-screenshots");
+const statLanguages = document.getElementById("stat-languages");
+const flowExplanation = document.getElementById("flow-explanation");
+const flowStages = document.querySelectorAll("[data-flow-target]");
+
+const sessionStats = {
+    claims: 0,
+    screenshots: 0,
+    languages: new Set()
+};
 
 const translations = {
     en: {
@@ -808,6 +824,122 @@ let lastSourceType = "text";
 const correctedTextButton = document.getElementById("analyse-corrected-button");
 const correctedTextButtonLabel = correctedTextButton.querySelector("span");
 
+function updateSessionStats(claimCount, sourceType, language) {
+    sessionStats.claims += claimCount;
+    if (sourceType === "image") {
+        sessionStats.screenshots += 1;
+    }
+    sessionStats.languages.add(language);
+    statClaims.textContent = sessionStats.claims;
+    statScreenshots.textContent = sessionStats.screenshots;
+    statLanguages.textContent = sessionStats.languages.size;
+}
+
+function setProgressStage(stage, sourceType) {
+    const stages = sourceType === "image"
+        ? ["reading", "extracting", "analysing", "sources", "report"]
+        : ["reading", "analysing", "sources", "report"];
+    progressSteps.forEach((step) => {
+        const key = step.dataset.progressStep;
+        step.classList.toggle("active", key === stage);
+        step.classList.remove("done");
+        step.hidden = sourceType !== "image" && key === "extracting";
+    });
+    const active = document.querySelector(`[data-progress-step="${stage}"]`);
+    progressDetail.textContent = active
+        ? active.textContent.replace(/^\d+\s*/, "").trim()
+        : stage;
+}
+
+function startProgress(sourceType, searchEnabled) {
+    progressPanel.hidden = false;
+    progressPanel.setAttribute("aria-busy", "true");
+    setProgressStage("reading", sourceType);
+    const stages = sourceType === "image"
+        ? ["reading", "extracting", "analysing", ...(searchEnabled ? ["sources"] : []), "report"]
+        : ["reading", "analysing", ...(searchEnabled ? ["sources"] : []), "report"];
+    const waitingStages = stages.slice(0, -1);
+    let index = 0;
+    const timer = window.setInterval(() => {
+        index += 1;
+        if (index >= waitingStages.length) {
+            window.clearInterval(timer);
+            index = waitingStages.length - 1;
+        }
+        if (waitingStages[index]) {
+            setProgressStage(waitingStages[index], sourceType);
+        }
+    }, 850);
+    return () => {
+        window.clearInterval(timer);
+        setProgressStage("report", sourceType);
+        progressPanel.setAttribute("aria-busy", "false");
+        window.setTimeout(() => {
+            progressPanel.hidden = true;
+        }, 500);
+    };
+}
+
+function showImagePreview(file) {
+    if (!file || !file.type.startsWith("image/")) {
+        imagePreview.hidden = true;
+        imagePreview.replaceChildren();
+        return;
+    }
+    const image = document.createElement("img");
+    image.alt = "Selected screenshot preview";
+    image.src = URL.createObjectURL(file);
+    imagePreview.replaceChildren(image);
+    imagePreview.hidden = false;
+}
+
+const flowDescriptions = {
+    "flow-claim": "We preserve the message's wording so you can see exactly what was analysed.",
+    "flow-ai": "Gemma provides a separate, clearly labelled AI assessment based on the claim.",
+    "flow-evidence": "Optional source search looks for leads; retrieved evidence is assessed separately.",
+    "flow-report": "The report combines findings and limitations without claiming more than the evidence supports."
+};
+
+flowStages.forEach((stage) => {
+    stage.addEventListener("click", () => {
+        flowStages.forEach((item) => item.classList.toggle("active", item === stage));
+        const target = stage.dataset.flowTarget;
+        const title = stage.querySelector("strong");
+        flowExplanation.innerHTML = "";
+        addTextElement(flowExplanation, "strong", title ? title.textContent : "Stage");
+        addTextElement(flowExplanation, "span", flowDescriptions[target] || "");
+    });
+});
+
+document.querySelectorAll("[data-sample-claim]").forEach((sample) => {
+    sample.addEventListener("click", () => {
+        messageInput.value = sample.dataset.sampleClaim || "";
+        messageInput.focus();
+    });
+});
+
+fileInput.addEventListener("change", () => showImagePreview(fileInput.files[0]));
+["dragenter", "dragover"].forEach((eventName) => {
+    dropzone.addEventListener(eventName, (event) => {
+        event.preventDefault();
+        dropzone.classList.add("is-dragging");
+    });
+});
+["dragleave", "drop"].forEach((eventName) => {
+    dropzone.addEventListener(eventName, (event) => {
+        event.preventDefault();
+        dropzone.classList.remove("is-dragging");
+    });
+});
+dropzone.addEventListener("drop", (event) => {
+    const file = event.dataTransfer.files[0];
+    if (!file) return;
+    const transfer = new DataTransfer();
+    transfer.items.add(file);
+    fileInput.files = transfer.files;
+    showImagePreview(file);
+});
+
 if (heroAction) {
     heroAction.addEventListener("click", () => {
         window.setTimeout(() => messageInput.focus(), 0);
@@ -1037,6 +1169,15 @@ function renderClaims(claimsBox, claims, extractionMethod) {
                     `${t("aiAssessmentLimitations")} ${item.ai_limitations.trim()}`
                 );
             }
+            const why = document.createElement("details");
+            why.className = "why-assessment";
+            addTextElement(why, "summary", "Why this assessment?");
+            addTextElement(
+                why,
+                "p",
+                item.ai_explanation.trim()
+            );
+            aiSection.appendChild(why);
             card.appendChild(aiSection);
         }
         renderVerdictAssessment(card, item);
@@ -2159,6 +2300,10 @@ async function submitAnalysis(formData, progressMessage) {
     statusText.textContent = progressMessage;
     statusText.classList.add("loading");
     statusText.setAttribute("aria-busy", "true");
+    const finishProgress = startProgress(
+        formData.get("source_type") === "image" ? "image" : "text",
+        sourceSearchCheckbox.checked
+    );
     stopCurrentSpeech();
     currentSpeechText = "";
     readReportButton.disabled = true;
@@ -2252,6 +2397,11 @@ async function submitAnalysis(formData, progressMessage) {
         linksBox.replaceChildren();
 
         renderClaims(claimsBox, analysis.claims, analysis.extraction_method);
+        updateSessionStats(
+            analysis.claims.filter((item) => item && typeof item.claim === "string").length,
+            lastSourceType,
+            data.language || currentLanguage
+        );
         renderGemmaContribution(claimsBox, analysis.gemma_provenance);
         evidenceStatusElement.textContent =
             analysis.evidence_status && typeof analysis.evidence_status.message === "string"
@@ -2292,6 +2442,7 @@ async function submitAnalysis(formData, progressMessage) {
                 error instanceof Error ? error.message : t("analysisFailed");
         }
     } finally {
+        finishProgress();
         window.clearTimeout(timeoutId);
         statusText.classList.remove("loading");
         statusText.removeAttribute("aria-busy");
